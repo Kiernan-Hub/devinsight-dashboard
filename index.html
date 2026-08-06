@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>DevInsight Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #111; color: #eee; padding: 2rem; }
+    canvas { max-width: 900px; }
+  </style>
+</head>
+<body>
+  <h1>DevInsight Dashboard</h1>
+  <canvas id="fpsChart"></canvas>
+  <canvas id="memChart"></canvas>
+
+  <script>
+    const SUPABASE_URL = "https://savgtraqvbqkbblhhhxe.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhdmd0cmFxdmJxa2JibGhoaHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTE5MjAsImV4cCI6MjEwMTQ2NzkyMH0.t6mC5d1a1P82j_NXGV_nLvrp5g4V3vfFuos37mrnq0w";
+
+    async function fetchLogs() {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/system_logs?select=*&order=created_at.desc&limit=50`,
+        {
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`
+          }
+        }
+      );
+      const data = await res.json();
+      return data.reverse(); // oldest to newest, left to right on the chart
+    }
+
+    async function renderCharts() {
+      const logs = await fetchLogs();
+      const labels = logs.map(row => new Date(row.created_at).toLocaleTimeString());
+      const fps = logs.map(row => row.fps_rate);
+      const mem = logs.map(row => row.memory_used_mb);
+
+      new Chart(document.getElementById("fpsChart"), {
+        type: "line",
+        data: { labels, datasets: [{ label: "FPS", data: fps, borderColor: "lime" }] }
+      });
+
+      new Chart(document.getElementById("memChart"), {
+        type: "line",
+        data: { labels, datasets: [{ label: "Memory (MB)", data: mem, borderColor: "cyan" }] }
+      });
+    }
+
+    renderCharts();
+    setInterval(renderCharts, 5000); // refresh every 5 seconds
+  </script>
+</body>
+</html>
