@@ -10,12 +10,49 @@
 </head>
 <body>
   <h1>DevInsight Dashboard</h1>
+  <div id="regressionBanner" style="display:none; background:#c0392b; color:#fff; padding:1rem; border-radius:6px; margin-bottom:1rem; font-weight:bold;"></div>
   <canvas id="fpsChart"></canvas>
   <canvas id="memChart"></canvas>
 
   <script>
     const SUPABASE_URL = "https://savgtraqvbqkbblhhhxe.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhdmd0cmFxdmJxa2JibGhoaHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTE5MjAsImV4cCI6MjEwMTQ2NzkyMH0.t6mC5d1a1P82j_NXGV_nLvrp5g4V3vfFuos37mrnq0w";
+    const REGRESSION_THRESHOLD = 0.10; // warn if avg FPS drops more than 10%
+
+    async function fetchBuildSummary() {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/build_fps_summary?select=*&order=last_seen.desc`,
+        {
+          headers: {
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`
+          }
+        }
+      );
+      return res.json();
+    }
+
+    async function checkRegression() {
+      const builds = await fetchBuildSummary();
+      const banner = document.getElementById("regressionBanner");
+
+      if (builds.length < 2) {
+        banner.style.display = "none";
+        return;
+      }
+
+      const [latest, previous] = builds;
+      const drop = (previous.avg_fps - latest.avg_fps) / previous.avg_fps;
+
+      if (drop > REGRESSION_THRESHOLD) {
+        banner.style.display = "block";
+        banner.textContent =
+          `⚠ Performance regression: build ${latest.build_version} averages ${latest.avg_fps} FPS, ` +
+          `down ${(drop * 100).toFixed(1)}% from build ${previous.build_version} (${previous.avg_fps} FPS)`;
+      } else {
+        banner.style.display = "none";
+      }
+    }
 
     async function fetchLogs() {
       const res = await fetch(
@@ -31,25 +68,38 @@
       return data.reverse(); // oldest to newest, left to right on the chart
     }
 
+    let fpsChart, memChart;
+
     async function renderCharts() {
       const logs = await fetchLogs();
       const labels = logs.map(row => new Date(row.created_at).toLocaleTimeString());
       const fps = logs.map(row => row.fps_rate);
       const mem = logs.map(row => row.memory_used_mb);
 
-      new Chart(document.getElementById("fpsChart"), {
-        type: "line",
-        data: { labels, datasets: [{ label: "FPS", data: fps, borderColor: "lime" }] }
-      });
+      if (!fpsChart) {
+        fpsChart = new Chart(document.getElementById("fpsChart"), {
+          type: "line",
+          data: { labels, datasets: [{ label: "FPS", data: fps, borderColor: "lime" }] }
+        });
+        memChart = new Chart(document.getElementById("memChart"), {
+          type: "line",
+          data: { labels, datasets: [{ label: "Memory (MB)", data: mem, borderColor: "cyan" }] }
+        });
+      } else {
+        fpsChart.data.labels = labels;
+        fpsChart.data.datasets[0].data = fps;
+        fpsChart.update();
 
-      new Chart(document.getElementById("memChart"), {
-        type: "line",
-        data: { labels, datasets: [{ label: "Memory (MB)", data: mem, borderColor: "cyan" }] }
-      });
+        memChart.data.labels = labels;
+        memChart.data.datasets[0].data = mem;
+        memChart.update();
+      }
     }
 
     renderCharts();
+    checkRegression();
     setInterval(renderCharts, 5000); // refresh every 5 seconds
+    setInterval(checkRegression, 5000);
   </script>
 </body>
 </html>
