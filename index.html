@@ -72,7 +72,9 @@
 
     async function renderCharts() {
       const logs = await fetchLogs();
-      const labels = logs.map(row => new Date(row.created_at).toLocaleTimeString());
+      const labels = logs.map(row => new Date(row.created_at).toLocaleString([], {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"
+      }));
       const fps = logs.map(row => row.fps_rate);
       const mem = logs.map(row => row.memory_used_mb);
 
