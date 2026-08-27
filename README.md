@@ -8,6 +8,12 @@ compared to the last one.
 **Pipeline:** Godot (`godot/system_logger.gd`) → Supabase (Postgres + REST API) → `index.html`
 dashboard (Chart.js), hosted on Vercel → GitHub Actions performance gate on every push.
 
+The dashboard supports 5-minute through 24-hour query windows, build filtering and baseline
+comparison, deploy/build markers, and a clickable performance-event timeline. Its headline
+metrics emphasize tail behavior (P95 frame time and 1% low FPS) rather than relying only on an
+average that can hide stutters. Build status is derived from explicit healthy, warning, and
+regression thresholds.
+
 ## Notable engineering decisions
 
 **Offline retry queue.** If the game can't reach Supabase (dropped connection, brief outage),
@@ -37,3 +43,27 @@ typically found in tutorial-tier portfolio projects.
 - **Supabase** — Postgres + REST API, RLS-locked anon key (insert/select only)
 - **Vercel** — static dashboard hosting
 - **GitHub Actions** — CI performance regression gate
+
+## Local checks
+
+Serve the repository with any static file server (for example,
+`python3 -m http.server 8000`) and open `index.html`. The dashboard's data calculations are kept
+in a dependency-free module and can be tested with:
+
+```sh
+node --test scripts/dashboard-core.test.mjs
+```
+
+To verify every dashboard feature without waiting for a running Godot session or configuring
+Supabase, open [`http://localhost:8000/?demo=1`](http://localhost:8000/?demo=1). Demo mode uses a
+deterministic in-browser dataset containing two builds, FPS drops, and a memory spike. Check that:
+
+1. The header says **Demo data** and the build comparison reports `-29.0% vs 0.2.0` as a regression.
+2. The FPS chart shows `v0.2.0` and `v0.3.0` build markers.
+3. Changing the time range or build filter redraws the charts.
+4. Clicking a performance event focuses its point on the FPS chart.
+5. **Pause live**, **Resume live**, and **Refresh** update the connection state as expected.
+
+Chart.js is checked into `vendor/` so the dashboard and demo remain testable when a CDN is
+unavailable. Production mode remains the default; the demo dataset is only enabled by the
+explicit `?demo=1` query parameter.

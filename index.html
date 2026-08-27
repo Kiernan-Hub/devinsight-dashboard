@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DevInsight — Ascent Telemetry</title>
   <meta name="description" content="Live performance telemetry for Ascent.">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="./vendor/chart.umd.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -36,6 +36,8 @@
     }
 
     button { font: inherit; }
+
+    button, select { color: inherit; }
 
     .shell {
       width: min(1240px, calc(100% - 48px));
@@ -122,6 +124,16 @@
 
     .updated { color: var(--muted); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 
+    .controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .control-group { display: flex; align-items: center; gap: 6px; }
+    .range-button, .control-button, .demo-link, select {
+      border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--muted);
+      padding: 7px 10px; font-size: 11px; cursor: pointer; text-decoration: none;
+    }
+    .range-button.active { border-color: rgba(103, 199, 212, .5); background: rgba(103, 199, 212, .09); color: var(--cyan); }
+    .control-button:hover, .range-button:hover, .demo-link:hover, select:hover { border-color: #40505e; color: var(--text); }
+    select { min-width: 116px; }
+
     .notice {
       display: none;
       align-items: center;
@@ -192,22 +204,18 @@
     .build-badge { border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: 10px; }
     .build-badge.healthy { border-color: rgba(155, 225, 93, 0.28); background: rgba(155, 225, 93, 0.07); color: var(--green); }
     .build-badge.regression { border-color: rgba(255, 107, 98, 0.3); background: rgba(255, 107, 98, 0.07); color: var(--red); }
+    .build-badge.warning { border-color: rgba(231, 185, 94, 0.3); background: rgba(231, 185, 94, 0.07); color: var(--amber); }
     .comparison { margin-top: 19px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
     .comparison-row { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; font-size: 12px; }
     .comparison-row span:first-child { color: var(--muted); }
 
-    .readings { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line-soft); }
-    .reading-head, .reading {
-      display: grid;
-      grid-template-columns: minmax(62px, 1fr) 52px 68px;
-      gap: 10px;
-      align-items: center;
-    }
-    .reading-head { margin-bottom: 5px; color: #606b74; font-size: 9px; letter-spacing: 0.07em; text-transform: uppercase; }
-    .reading { padding: 8px 0; border-bottom: 1px solid var(--line-soft); font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .reading:last-child { border-bottom: 0; }
-    .reading span:first-child { color: var(--muted); }
-    .reading span:not(:first-child), .reading-head span:not(:first-child) { text-align: right; }
+    .events { margin-top: 22px; padding-top: 17px; border-top: 1px solid var(--line-soft); }
+    .event { width: 100%; display: grid; grid-template-columns: 54px 1fr; gap: 10px; padding: 10px 0; border: 0; border-bottom: 1px solid var(--line-soft); background: none; text-align: left; cursor: pointer; }
+    .event:last-child { border-bottom: 0; }
+    .event-time { color: var(--muted); font: 10px/1.3 ui-monospace, monospace; }
+    .event strong { display: block; font-size: 11px; }
+    .event small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
+    .event.drop strong { color: var(--red); } .event.build strong { color: var(--cyan); } .event.memory strong { color: var(--amber); }
 
     .empty {
       display: none;
@@ -269,21 +277,31 @@
 
     <div class="notice" id="notice"><span id="noticeText"></span><button class="retry" id="retryButton" type="button">Retry</button></div>
 
+    <section class="controls" aria-label="Telemetry filters">
+      <div class="control-group" id="rangeControls">
+        <button class="range-button active" type="button" data-minutes="5">5m</button>
+        <button class="range-button" type="button" data-minutes="30">30m</button>
+        <button class="range-button" type="button" data-minutes="60">1h</button>
+        <button class="range-button" type="button" data-minutes="1440">24h</button>
+      </div>
+      <div class="control-group"><label class="metric-label" for="buildFilter">Build</label><select id="buildFilter"><option value="all">All builds</option></select><button class="control-button" id="pauseButton" type="button">Pause live</button><button class="control-button" id="refreshButton" type="button">Refresh</button><a class="demo-link" id="demoLink" href="?demo=1">Try demo</a></div>
+    </section>
+
     <section class="metrics" aria-label="Current performance metrics">
       <article class="metric"><div class="metric-label">Current FPS</div><div class="metric-row"><strong class="metric-value" id="currentFps">—</strong><span class="metric-unit">fps</span></div><div class="metric-meta" id="currentFpsMeta">Latest sample</div></article>
-      <article class="metric"><div class="metric-label">Average FPS</div><div class="metric-row"><strong class="metric-value" id="averageFps">—</strong><span class="metric-unit">fps</span></div><div class="metric-meta" id="averageFpsMeta">Across visible samples</div></article>
+      <article class="metric"><div class="metric-label">P95 frame time</div><div class="metric-row"><strong class="metric-value" id="p95FrameTime">—</strong><span class="metric-unit">ms</span></div><div class="metric-meta" id="averageFpsMeta">Average FPS —</div></article>
       <article class="metric"><div class="metric-label">Memory</div><div class="metric-row"><strong class="metric-value" id="currentMemory">—</strong><span class="metric-unit">MB</span></div><div class="metric-meta" id="memoryMeta">Latest sample</div></article>
-      <article class="metric"><div class="metric-label">Frame floor</div><div class="metric-row"><strong class="metric-value" id="minimumFps">—</strong><span class="metric-unit">fps</span></div><div class="metric-meta" id="sampleCount">No samples yet</div></article>
+      <article class="metric"><div class="metric-label">1% low FPS</div><div class="metric-row"><strong class="metric-value" id="onePercentLow">—</strong><span class="metric-unit">fps</span></div><div class="metric-meta" id="sampleCount">No samples yet</div></article>
     </section>
 
     <section class="grid">
       <div class="stack">
         <article class="panel">
-          <div class="panel-head"><h3 class="panel-title">Frame rate</h3><span class="panel-note">FPS / LAST 50 SAMPLES</span></div>
+          <div class="panel-head"><h3 class="panel-title">Frame rate</h3><span class="panel-note" id="fpsWindow">FPS / LAST 5 MINUTES</span></div>
           <div class="chart-wrap"><canvas id="fpsChart"></canvas><div class="empty" id="fpsEmpty">No frame data available</div></div>
         </article>
         <article class="panel">
-          <div class="panel-head"><h3 class="panel-title">Memory footprint</h3><span class="panel-note">MB / LAST 50 SAMPLES</span></div>
+          <div class="panel-head"><h3 class="panel-title">Memory footprint</h3><span class="panel-note" id="memoryWindow">MB / LAST 5 MINUTES</span></div>
           <div class="chart-wrap small"><canvas id="memChart"></canvas><div class="empty" id="memoryEmpty">No memory data available</div></div>
         </article>
       </div>
@@ -294,16 +312,15 @@
           <span class="build-badge" id="buildStatus">Awaiting data</span>
         </div>
         <div class="comparison">
-          <div class="metric-label">Compared with previous</div>
-          <div class="comparison-row"><span>Previous build</span><strong id="previousBuild">—</strong></div>
+          <div class="metric-label">Build comparison</div>
+          <div class="comparison-row"><span>Baseline</span><select id="baselineBuild" aria-label="Comparison baseline"><option value="">Previous build</option></select></div>
           <div class="comparison-row"><span>Average FPS</span><strong id="buildAverage">—</strong></div>
           <div class="comparison-row"><span>Change</span><strong id="buildChange">—</strong></div>
           <div class="comparison-row"><span>Samples</span><strong id="buildSamples">—</strong></div>
         </div>
-        <div class="readings">
-          <div class="metric-label">Recent readings</div>
-          <div class="reading-head"><span>Time</span><span>FPS</span><span>Memory</span></div>
-          <div id="recentReadings"><div class="reading"><span>Waiting</span><span>—</span><span>—</span></div></div>
+        <div class="events">
+          <div class="metric-label">Performance events</div>
+          <div id="performanceEvents"><div class="event"><span class="event-time">—</span><span><strong>Waiting for telemetry</strong></span></div></div>
         </div>
       </aside>
     </section>
@@ -311,16 +328,21 @@
     <footer><span>Telemetry from <code>Ascent</code> via Supabase</span><span>Performance budget: no more than 10% FPS regression</span></footer>
   </main>
 
-  <script>
+  <script type="module">
+    import { compareBuilds, detectEvents, logsPath, summarizeLogs } from "./scripts/dashboard-core.mjs";
     const SUPABASE_URL = "https://savgtraqvbqkbblhhhxe.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhdmd0cmFxdmJxa2JibGhoaHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTE5MjAsImV4cCI6MjEwMTQ2NzkyMH0.t6mC5d1a1P82j_NXGV_nLvrp5g4V3vfFuos37mrnq0w";
-    const REGRESSION_THRESHOLD = 0.10;
     const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
+    const demoMode = new URLSearchParams(location.search).has("demo");
 
     const $ = id => document.getElementById(id);
     let fpsChart;
     let memChart;
     let refreshing = false;
+    let paused = false;
+    let rangeMinutes = 5;
+    let selectedBuild = "all";
+    let latestBuilds = [];
 
     const chartColors = {
       grid: "rgba(137, 148, 158, 0.11)",
@@ -332,6 +354,48 @@
     Chart.defaults.color = chartColors.ticks;
     Chart.defaults.font.family = 'Inter, ui-sans-serif, system-ui, sans-serif';
 
+    const buildMarkerPlugin = {
+      id: "buildMarkers",
+      afterDatasetsDraw(chart) {
+        const markers = chart.options.plugins.buildMarkers || [];
+        const { ctx, chartArea, scales } = chart;
+        ctx.save();
+        markers.forEach(marker => {
+          const x = scales.x.getPixelForValue(marker.index);
+          if (x < chartArea.left || x > chartArea.right) return;
+          ctx.strokeStyle = "rgba(103, 199, 212, .65)";
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+          ctx.setLineDash([]); ctx.fillStyle = "#67c7d4"; ctx.font = "10px ui-monospace";
+          ctx.fillText(marker.label.replace("Build ", "v"), Math.min(x + 5, chartArea.right - 48), chartArea.top + 12);
+        });
+        ctx.restore();
+      }
+    };
+    Chart.register(buildMarkerPlugin);
+
+    function demoData() {
+      const now = Date.now();
+      const logs = Array.from({ length: 48 }, (_, index) => {
+        const isCurrentBuild = index >= 24;
+        const base = isCurrentBuild ? 79 : 108;
+        const drop = index === 34 || index === 43 ? 34 : 0;
+        return {
+          created_at: new Date(now - (47 - index) * 5_000).toISOString(),
+          build_version: isCurrentBuild ? "0.3.0" : "0.2.0",
+          fps_rate: Math.max(35, base + Math.sin(index / 2) * 5 - drop),
+          memory_used_mb: 89 + index * 0.08 + (index === 39 ? 9 : 0)
+        };
+      });
+      return {
+        logs,
+        builds: [
+          { build_version: "0.3.0", avg_fps: 76.8, sample_count: 443 },
+          { build_version: "0.2.0", avg_fps: 108.1, sample_count: 518 }
+        ]
+      };
+    }
+
     function chartOptions(suggestedMin) {
       return {
         responsive: true,
@@ -340,6 +404,7 @@
         interaction: { intersect: false, mode: "index" },
         plugins: {
           legend: { display: false },
+          buildMarkers: [],
           tooltip: {
             backgroundColor: "#1c232a",
             borderColor: "#34404a",
@@ -358,6 +423,11 @@
     }
 
     async function fetchJson(path) {
+      if (demoMode) {
+        const data = demoData();
+        if (path.includes("build_fps_summary")) return data.builds;
+        return selectedBuild === "all" ? data.logs : data.logs.filter(row => row.build_version === selectedBuild);
+      }
       const response = await fetch(`${SUPABASE_URL}${path}`, { headers });
       if (!response.ok) throw new Error(`Supabase returned ${response.status}`);
       const data = await response.json();
@@ -367,48 +437,40 @@
 
     function renderMetrics(logs) {
       if (!logs.length) {
-        ["currentFps", "averageFps", "minimumFps", "currentMemory"].forEach(id => $(id).textContent = "—");
+        ["currentFps", "p95FrameTime", "onePercentLow", "currentMemory"].forEach(id => $(id).textContent = "—");
         $("sampleCount").textContent = "No samples yet";
-        $("recentReadings").innerHTML = '<div class="reading"><span>No data</span><span>—</span><span>—</span></div>';
         return;
       }
       const latest = logs.at(-1);
-      const fps = logs.map(row => Number(row.fps_rate)).filter(Number.isFinite);
-      const memory = logs.map(row => Number(row.memory_used_mb)).filter(Number.isFinite);
-      if (!fps.length || !memory.length) throw new Error("Telemetry contains invalid measurements");
-      const average = fps.reduce((sum, value) => sum + value, 0) / fps.length;
+      const summary = summarizeLogs(logs);
+      if (!summary) throw new Error("Telemetry contains invalid measurements");
 
-      $("currentFps").textContent = Number(latest.fps_rate).toFixed(0);
-      $("averageFps").textContent = average.toFixed(1);
-      $("minimumFps").textContent = Math.min(...fps).toFixed(0);
-      $("currentMemory").textContent = Number(latest.memory_used_mb).toFixed(1);
+      $("currentFps").textContent = summary.currentFps.toFixed(0);
+      $("p95FrameTime").textContent = summary.p95FrameTime.toFixed(1);
+      $("onePercentLow").textContent = summary.onePercentLow.toFixed(0);
+      $("currentMemory").textContent = summary.currentMemory.toFixed(1);
       $("sampleCount").textContent = `${logs.length} visible samples`;
       $("currentFpsMeta").textContent = `Build ${latest.build_version || "unversioned"}`;
-
-      if (memory.length > 1) {
-        const memoryDelta = memory.at(-1) - memory[0];
-        $("memoryMeta").textContent = `${memoryDelta >= 0 ? "+" : ""}${memoryDelta.toFixed(1)} MB over this window`;
-      }
-
-      $("recentReadings").innerHTML = logs.slice(-5).reverse().map(row => {
-        const time = new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-        return `<div class="reading"><span>${time}</span><span>${Number(row.fps_rate).toFixed(0)}</span><span>${Number(row.memory_used_mb).toFixed(1)}</span></div>`;
-      }).join("");
+      $("averageFpsMeta").textContent = `Average ${summary.averageFps.toFixed(1)} FPS`;
+      $("memoryMeta").textContent = `${summary.memoryDelta >= 0 ? "+" : ""}${summary.memoryDelta.toFixed(1)} MB over this window`;
     }
 
     function renderCharts(logs) {
       const labels = logs.map(row => new Date(row.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
       const fps = logs.map(row => Number(row.fps_rate));
       const memory = logs.map(row => Number(row.memory_used_mb));
+      const markers = detectEvents(logs).filter(event => event.type === "build");
       $("fpsEmpty").classList.toggle("visible", !logs.length);
       $("memoryEmpty").classList.toggle("visible", !logs.length);
       if (!logs.length) return;
 
       if (!fpsChart) {
+        const fpsOptions = chartOptions(Math.max(0, Math.min(...fps) - 10));
+        fpsOptions.plugins.buildMarkers = markers;
         fpsChart = new Chart($("fpsChart"), {
           type: "line",
           data: { labels, datasets: [{ data: fps, borderColor: chartColors.fps, backgroundColor: "rgba(155, 225, 93, 0.08)", fill: true, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.25 }] },
-          options: chartOptions(Math.max(0, Math.min(...fps) - 10))
+          options: fpsOptions
         });
         memChart = new Chart($("memChart"), {
           type: "line",
@@ -420,6 +482,7 @@
         fpsChart.data.datasets[0].data = fps;
         memChart.data.labels = labels;
         memChart.data.datasets[0].data = memory;
+        fpsChart.options.plugins.buildMarkers = markers;
         fpsChart.update();
         memChart.update();
       }
@@ -427,8 +490,9 @@
 
     function renderBuild(builds) {
       if (!builds.length) return;
-      const latest = builds[0];
-      const previous = builds[1];
+      const latest = selectedBuild === "all" ? builds[0] : builds.find(build => build.build_version === selectedBuild) || builds[0];
+      const baselineValue = $("baselineBuild").value;
+      const previous = builds.find(build => build.build_version === baselineValue) || builds.find(build => build.build_version !== latest.build_version);
       $("buildVersion").textContent = latest.build_version || "unversioned";
       $("buildAverage").textContent = `${Number(latest.avg_fps).toFixed(1)} FPS`;
       $("buildSamples").textContent = latest.sample_count ?? "—";
@@ -436,22 +500,47 @@
       if (!previous) {
         $("buildStatus").textContent = "First build";
         $("buildStatus").className = "build-badge";
-        $("previousBuild").textContent = "None yet";
         $("buildChange").textContent = "—";
         return;
       }
 
-      const drop = (Number(previous.avg_fps) - Number(latest.avg_fps)) / Number(previous.avg_fps);
-      const change = -drop * 100;
-      $("previousBuild").textContent = previous.build_version;
-      $("buildChange").textContent = `${change >= 0 ? "+" : ""}${change.toFixed(1)}%`;
+      const comparison = compareBuilds(latest, previous);
+      if (!comparison) return;
+      const change = comparison.changePercent;
+      $("buildChange").textContent = `${change >= 0 ? "+" : ""}${change.toFixed(1)}% vs ${previous.build_version}`;
       $("buildChange").className = change >= 0 ? "positive" : "negative";
-      $("buildStatus").textContent = drop > REGRESSION_THRESHOLD ? "Regression" : "Within budget";
-      $("buildStatus").className = `build-badge ${drop > REGRESSION_THRESHOLD ? "regression" : "healthy"}`;
+      const labels = { healthy: "Healthy", warning: "Warning", regression: "Regression" };
+      $("buildStatus").textContent = labels[comparison.status];
+      $("buildStatus").className = `build-badge ${comparison.status}`;
 
-      if (drop > REGRESSION_THRESHOLD) {
+      if (comparison.status === "regression") {
         showNotice(`Build ${latest.build_version} is ${Math.abs(change).toFixed(1)}% slower than ${previous.build_version}.`, "regression");
       }
+    }
+
+    function renderEvents(logs) {
+      const events = detectEvents(logs).slice(0, 8);
+      $("performanceEvents").innerHTML = events.length ? events.map(event => {
+        const time = new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+        return `<button class="event ${event.type}" type="button" data-index="${event.index}"><span class="event-time">${time}</span><span><strong>${event.label}</strong><small>${event.detail}</small></span></button>`;
+      }).join("") : '<div class="event"><span class="event-time">—</span><span><strong>No events in this range</strong><small>Build boundaries and anomalies appear here</small></span></div>';
+      $("performanceEvents").querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
+        const index = Number(button.dataset.index);
+        fpsChart?.setActiveElements([{ datasetIndex: 0, index }]);
+        fpsChart?.tooltip?.setActiveElements([{ datasetIndex: 0, index }], { x: 0, y: 0 });
+        fpsChart?.update();
+        $("fpsChart").scrollIntoView({ behavior: "smooth", block: "center" });
+      }));
+    }
+
+    function populateBuildControls(builds) {
+      const versions = builds.map(build => build.build_version).filter(Boolean);
+      const currentFilter = $("buildFilter").value;
+      $("buildFilter").innerHTML = '<option value="all">All builds</option>' + versions.map(version => `<option value="${version}">${version}</option>`).join("");
+      $("buildFilter").value = versions.includes(currentFilter) ? currentFilter : "all";
+      const currentBaseline = $("baselineBuild").value;
+      $("baselineBuild").innerHTML = versions.map((version, index) => `<option value="${version}"${index === 1 ? " selected" : ""}>${version}</option>`).join("");
+      if (versions.includes(currentBaseline)) $("baselineBuild").value = currentBaseline;
     }
 
     function showNotice(message, type = "error") {
@@ -466,20 +555,23 @@
     }
 
     async function refresh() {
-      if (refreshing) return;
+      if (refreshing || paused) return;
       refreshing = true;
       setConnection("", "Updating");
       try {
         const [logsDescending, builds] = await Promise.all([
-          fetchJson("/rest/v1/system_logs?select=*&order=created_at.desc&limit=50"),
+          fetchJson(logsPath(rangeMinutes, selectedBuild)),
           fetchJson("/rest/v1/build_fps_summary?select=*&order=last_seen.desc")
         ]);
-        const logs = logsDescending.reverse();
+        const logs = logsDescending;
+        latestBuilds = builds;
+        populateBuildControls(builds);
         renderMetrics(logs);
         renderCharts(logs);
+        renderEvents(logs);
         $("notice").className = "notice";
         renderBuild(builds);
-        setConnection("live", "Live");
+        setConnection("live", demoMode ? "Demo data" : "Live");
         $("updatedAt").textContent = `UPDATED ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
       } catch (error) {
         setConnection("error", "Offline");
@@ -490,6 +582,31 @@
     }
 
     $("retryButton").addEventListener("click", refresh);
+    $("refreshButton").addEventListener("click", () => { paused = false; $("pauseButton").textContent = "Pause live"; refresh(); });
+    $("pauseButton").addEventListener("click", () => {
+      paused = !paused;
+      $("pauseButton").textContent = paused ? "Resume live" : "Pause live";
+      setConnection(paused ? "" : "live", paused ? "Paused" : "Live");
+      if (!paused) refresh();
+    });
+    $("rangeControls").addEventListener("click", event => {
+      const button = event.target.closest("[data-minutes]");
+      if (!button) return;
+      rangeMinutes = Number(button.dataset.minutes);
+      document.querySelectorAll(".range-button").forEach(item => item.classList.toggle("active", item === button));
+      const label = button.textContent.toUpperCase();
+      $("fpsWindow").textContent = `FPS / LAST ${label}`;
+      $("memoryWindow").textContent = `MB / LAST ${label}`;
+      refresh();
+    });
+    $("buildFilter").addEventListener("change", event => { selectedBuild = event.target.value; refresh(); });
+    $("baselineBuild").addEventListener("change", () => renderBuild(latestBuilds));
+    if (demoMode) {
+      document.querySelector(".eyebrow").textContent = "Ascent / demo mode";
+      document.querySelector(".intro-copy").textContent = "A deterministic sample dataset for verifying dashboard behavior.";
+      $("demoLink").href = location.pathname;
+      $("demoLink").textContent = "View live";
+    }
     refresh();
     setInterval(refresh, 5000);
   </script>
