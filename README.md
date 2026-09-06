@@ -50,12 +50,31 @@ as a reference at all. Build selection also sorts on `last_seen` and requires a 
 `build_version` rather than trusting the query's row order, so replaying telemetry for an old
 build can't quietly promote it to "latest" and compare a build against itself.
 
+**Schema kept in the repo, not just in the console.** `supabase/schema.sql` is the source of
+truth for the database side: the `system_logs` table, its indexes, the row-level security policies,
+and the `build_fps_summary` view the CI gate reads. It matters for two reasons. The anon key is
+embedded in the shipped game client, so it is public by design — the RLS policies are the only
+thing limiting what that key can do, and they grant insert and select and nothing else, so a leaked
+key cannot rewrite or erase history. And the whole pipeline depends on this schema, so a reader can
+now inspect it and the project can be rebuilt from the repository alone. The script is re-runnable
+and was verified by applying it to a local Postgres 16 instance, inserting the client's exact
+payload as the `anon` role, confirming update and delete are refused, and running the CI gate
+against the resulting view output.
+
 ## Stack
 
 - **Godot** — game client, posts telemetry via `HTTPRequest`
 - **Supabase** — Postgres + REST API, RLS-locked anon key (insert/select only)
 - **Vercel** — static dashboard hosting
 - **GitHub Actions** — CI performance regression gate
+
+## Database setup
+
+Apply the schema through the Supabase SQL editor, or directly:
+
+```sh
+psql "$SUPABASE_DB_URL" -f supabase/schema.sql
+```
 
 ## Local checks
 
