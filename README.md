@@ -32,10 +32,23 @@ Building this surfaced two real bugs worth mentioning:
   on the way back out. Fixed by explicitly re-casting on load.
 
 **CI performance gate.** `.github/workflows/perf-gate.yml` runs `scripts/check-regression.mjs`
-on every push to `main`, comparing the latest build's average FPS (via the `build_fps_summary`
-SQL view, grouped by `build_version`) against the previous build. A regression over 10% fails
-the CI check — the same category of gate used in production game/perf engineering, not something
-typically found in tutorial-tier portfolio projects.
+on every push and pull request against `main`, comparing the latest build's average FPS (via the
+`build_fps_summary` SQL view, grouped by `build_version`) against the previous build. A regression
+over 10% fails the CI check — the same category of gate used in production game/perf engineering,
+not something typically found in tutorial-tier portfolio projects.
+
+The gate's decision logic lives in `scripts/regression-core.mjs`, kept free of network calls and
+`process.exit` so it can be unit tested; `check-regression.mjs` is only the shell that fetches data
+and turns a verdict into an exit code.
+
+**A gate that stays honest when the data is thin.** A build average is only a measurement if
+enough samples sit behind it. The logger reports every 5 seconds, so a build with 4 rows
+represents about 20 seconds of play — an average that a single load screen can move further than
+a genuine regression would. Failing CI on that makes the gate flaky rather than strict, so builds
+under 30 samples are reported as skipped instead of judged, and a baseline that thin is not used
+as a reference at all. Build selection also sorts on `last_seen` and requires a differing
+`build_version` rather than trusting the query's row order, so replaying telemetry for an old
+build can't quietly promote it to "latest" and compare a build against itself.
 
 ## Stack
 
@@ -51,8 +64,11 @@ Serve the repository with any static file server (for example,
 in a dependency-free module and can be tested with:
 
 ```sh
-node --test scripts/dashboard-core.test.mjs
+node --test scripts/*.test.mjs
 ```
+
+The same command runs in CI as the `unit-tests` job, which gates the `check-regression` job — so a
+change to the gate's own logic has to pass its tests before it can fail or pass a build.
 
 To verify every dashboard feature without waiting for a running Godot session or configuring
 Supabase, open [`http://localhost:8000/?demo=1`](http://localhost:8000/?demo=1). Demo mode uses a
