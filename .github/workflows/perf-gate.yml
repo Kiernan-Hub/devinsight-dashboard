@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Runs on every push and pull request. Needs no secrets, so it also gates
-  # changes to the gate's own logic before they reach main.
+  # Calculation logic only. No dependencies, so it stays runnable straight from
+  # a clone, and it gates changes to the gate's own logic before they reach main.
   unit-tests:
     runs-on: ubuntu-latest
     steps:
@@ -20,12 +20,33 @@ jobs:
           node-version: 20
 
       - name: Run unit tests
-        run: node --test scripts/*.test.mjs
+        run: npm test
+
+  # Loads index.html in a real browser. Catches the failures unit tests cannot
+  # see: a broken module import, a renamed element id, a Chart.js call that
+  # throws — anything that leaves the page blank while the maths stays correct.
+  ui-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser tests
+        run: npm run test:ui
 
   # Compares the latest build's telemetry against the previous build.
   check-regression:
     runs-on: ubuntu-latest
-    needs: unit-tests
+    needs: [unit-tests, ui-tests]
     steps:
       - uses: actions/checkout@v4
 

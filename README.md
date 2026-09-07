@@ -78,27 +78,48 @@ psql "$SUPABASE_DB_URL" -f supabase/schema.sql
 
 ## Local checks
 
-Serve the repository with any static file server (for example,
-`python3 -m http.server 8000`) and open `index.html`. The dashboard's data calculations are kept
-in a dependency-free module and can be tested with:
+The dashboard's calculations live in a dependency-free module and are tested with no install step,
+straight from a clone:
 
 ```sh
-node --test scripts/*.test.mjs
+npm test          # node --test scripts/*.test.mjs
 ```
 
-The same command runs in CI as the `unit-tests` job, which gates the `check-regression` job — so a
-change to the gate's own logic has to pass its tests before it can fail or pass a build.
+The browser tests need Playwright, so they are a separate command and a separate file extension
+(`.uitest.mjs`) to keep the line above dependency-free:
 
-To verify every dashboard feature without waiting for a running Godot session or configuring
-Supabase, open [`http://localhost:8000/?demo=1`](http://localhost:8000/?demo=1). Demo mode uses a
-deterministic in-browser dataset containing two builds, FPS drops, and a memory spike. Check that:
+```sh
+npm ci
+npx playwright install --with-deps chromium
+npm run test:ui   # node --test scripts/*.uitest.mjs
+```
 
-1. The header says **Demo data** and the build comparison reports `-29.0% vs 0.2.0` as a regression.
-2. The FPS chart shows `v0.2.0` and `v0.3.0` build markers.
-3. Changing the time range or build filter redraws the charts.
-4. Clicking a performance event focuses its point on the FPS chart.
-5. **Pause live**, **Resume live**, and **Refresh** update the connection state as expected.
+Both run in CI and both gate the regression check, so a change that breaks the maths or the page
+cannot reach `main` on a green build.
 
-Chart.js is checked into `vendor/` so the dashboard and demo remain testable when a CDN is
-unavailable. Production mode remains the default; the demo dataset is only enabled by the
-explicit `?demo=1` query parameter.
+To look at the dashboard by hand, serve the repository with any static file server (for example
+`python3 -m http.server 8000`) and open [`http://localhost:8000/?demo=1`](http://localhost:8000/?demo=1).
+Demo mode uses a deterministic in-browser dataset containing two builds, FPS drops, and a memory
+spike, so every feature can be exercised without a running Godot session or Supabase credentials.
+Production mode remains the default; the demo dataset is only enabled by the explicit `?demo=1`
+query parameter. Chart.js is checked into `vendor/` so the dashboard and demo stay testable when a
+CDN is unavailable.
+
+## Notes on the browser tests
+
+Unit tests cover the arithmetic, but arithmetic is not what usually breaks a dashboard. A renamed
+element id, a typo in a module import, or a Chart.js call that throws all leave the calculations
+correct and the page blank — and leave a unit-test suite green. `scripts/dashboard-ui.uitest.mjs`
+loads the real `index.html` in headless Chromium and asserts on what a visitor actually gets: that
+every headline metric holds a number rather than a placeholder, that both canvases contain drawn
+pixels, that the range buttons and build filter redraw, that pause/resume/refresh move the
+connection state, that clicking a performance event highlights a point on the FPS chart, and that
+an unreachable backend produces a visible **Offline** state with a working retry button instead of
+an empty screen. Any console error or uncaught exception fails the run outright.
+
+The suite was checked against deliberate breakage rather than assumed to work. Five mutations were
+introduced one at a time — a renamed element id, a broken module import path, a flipped sign in the
+build comparison, a swallowed offline state, and unwired event-click handlers — and each was caught
+(7/8, 8/8, 1/8, 1/8 and 1/8 tests failing respectively). The whole suite runs in about four
+seconds; Playwright's default 30-second wait is lowered to five, since the page renders from a
+local fixture and a slow render is a failure rather than a delay.

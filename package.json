@@ -1,0 +1,14 @@
+{
+  "name": "devinsight-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live performance telemetry pipeline for the Godot game Ascent.",
+  "scripts": {
+    "test": "node --test scripts/*.test.mjs",
+    "test:ui": "node --test scripts/*.uitest.mjs",
+    "test:all": "npm test && npm run test:ui"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}
