@@ -8,8 +8,8 @@ const BUILD_VERSION := "0.5.0"
 # The token still ships inside the game binary, so it is not a secret — nothing in a shipped
 # client is. What changed is its blast radius: it can no longer write arbitrary rows into the
 # table the CI performance gate reads.
-const INGEST_URL = "https://devinsight-dashboard.vercel.app/api/ingest"
-const INGEST_TOKEN = ""  # match the server's INGEST_TOKEN env var; blank disables the check
+const INGEST_URL = "https://devinsight-dashboard-delta.vercel.app/api/ingest"
+const INGEST_TOKEN = "in 4308jf4 oKLFEN03$*(#J"  # must match the server's INGEST_TOKEN env var exactly
 
 const QUEUE_FILE_PATH := "user://log_queue.json"
 const MAX_QUEUE_SIZE := 500

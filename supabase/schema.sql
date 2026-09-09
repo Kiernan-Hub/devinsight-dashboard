@@ -193,9 +193,15 @@ grant select on public.sessions    to anon;
 
 -- ---------------------------------------------------------------------------
 -- Aggregate view — read by the dashboard and by scripts/check-regression.mjs
+--
+-- Dropped and recreated rather than CREATE OR REPLACE: the very first version of this view
+-- (created before this file existed) had columns in a different order, and Postgres refuses
+-- to reorder or rename a view's existing columns in place ("cannot change name of view column").
+-- Dropping first sidesteps that; nothing here holds data, so there is nothing to lose.
 -- ---------------------------------------------------------------------------
 
-create or replace view public.build_fps_summary as
+drop view if exists public.build_fps_summary;
+create view public.build_fps_summary as
 select
   build_version,
   round(avg(fps_rate)::numeric, 2)                                              as avg_fps,
@@ -219,7 +225,11 @@ grant select on public.build_fps_summary to anon;
 -- without ever announcing an ending is one the player did not close normally. A crash rate per
 -- build is a far sharper quality signal than an average frame rate, and it costs nothing extra
 -- to collect — it falls out of data the client could not have faked on its way down.
-create or replace view public.session_summary as
+--
+-- Dropped and recreated for the same reason as build_fps_summary above: this view is new, but
+-- being consistent here means a future column reorder won't hit the same wall.
+drop view if exists public.session_summary;
+create view public.session_summary as
 select
   s.id,
   s.build_version,
