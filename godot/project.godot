@@ -1,0 +1,13 @@
+; Minimal Godot project that exists so system_logger.gd can be exercised headlessly, on its
+; own, without the full game. The game lives outside this repository on purpose; this harness
+; keeps the one file the repository does publish independently testable.
+;
+; Run:  godot --headless --path godot --script tests/test_logger_queue.gd
+
+config_version=5
+
+[application]
+
+config/name="DevInsight Logger Harness"
+config/features=PackedStringArray("4.7")
+run/disable_stdout=false

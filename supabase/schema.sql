@@ -10,6 +10,36 @@
 -- Safe to re-run: every statement is idempotent.
 
 -- ---------------------------------------------------------------------------
+-- Sessions
+--
+-- One row per play session. Before this existed every sample was an isolated point with no
+-- notion of which run it belonged to, so no question of the form "what happened during THAT
+-- session" could be asked at all.
+--
+-- The important column is the absence of one: a session with a last_seen_at but no ended_at
+-- stopped reporting without saying goodbye — a crash, a force-quit, or a closed laptop. That
+-- is inferred from missing data, never written by the client, which is exactly why a client
+-- that dies mid-frame cannot lie about it.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.sessions (
+  id            uuid primary key,
+  build_version text        not null,
+  platform      text,
+  started_at    timestamptz not null default now(),
+  last_seen_at  timestamptz not null default now(),
+  ended_at      timestamptz,
+  ended_cleanly boolean,
+  sample_count  integer     not null default 0
+);
+
+create index if not exists sessions_build_started_idx
+  on public.sessions (build_version, started_at desc);
+
+create index if not exists sessions_open_idx
+  on public.sessions (last_seen_at desc) where ended_at is null;
+
+-- ---------------------------------------------------------------------------
 -- Table
 -- ---------------------------------------------------------------------------
 
@@ -35,6 +65,24 @@ create table if not exists public.system_logs (
 alter table public.system_logs add column if not exists frame_time_p95_ms numeric(8, 3);
 alter table public.system_logs add column if not exists frame_time_max_ms numeric(8, 3);
 alter table public.system_logs add column if not exists frames_sampled    integer;
+
+-- Links each sample to the play session it came from. Nullable because every row written
+-- before sessions existed has no session to point at, and deleting history to add a column
+-- would be a poor trade. on delete set null keeps orphaned samples rather than cascading a
+-- session deletion into the measurements themselves.
+alter table public.system_logs add column if not exists session_id uuid;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'system_logs_session_fk') then
+    alter table public.system_logs
+      add constraint system_logs_session_fk
+      foreign key (session_id) references public.sessions (id) on delete set null;
+  end if;
+end $$;
+
+create index if not exists system_logs_session_idx
+  on public.system_logs (session_id, created_at asc);
 
 -- ---------------------------------------------------------------------------
 -- Constraints
@@ -110,21 +158,39 @@ create index if not exists system_logs_build_created_idx
 -- ---------------------------------------------------------------------------
 -- Row-level security
 --
--- anon may insert (the game) and select (the dashboard). It may never update or delete —
--- omitting those policies denies them, because RLS denies anything not explicitly allowed.
+-- anon is now READ-ONLY. Writes arrive exclusively through /api/ingest, which authenticates
+-- with the service-role key held in server-side environment variables.
+--
+-- This is the change that closes the original hole. The anon key is public by necessity — it
+-- is in the dashboard's JavaScript — so for as long as it could insert, any stranger could
+-- write rows into the table that the CI performance gate reads, and either fail builds at will
+-- or mask a real regression. Constraints could bound how *absurd* those rows were; they could
+-- never stop plausible ones. Taking the write grant away is what actually fixes it.
+--
+-- RLS denies anything not explicitly allowed, so dropping the insert policy is sufficient:
+-- there is no update or delete policy either.
 -- ---------------------------------------------------------------------------
 
 alter table public.system_logs enable row level security;
+alter table public.sessions    enable row level security;
 
+-- Removes the grant that let anyone holding the public key write telemetry.
 drop policy if exists "anon can insert telemetry" on public.system_logs;
-create policy "anon can insert telemetry"
-  on public.system_logs for insert to anon
-  with check (true);
 
 drop policy if exists "anon can read telemetry" on public.system_logs;
 create policy "anon can read telemetry"
   on public.system_logs for select to anon
   using (true);
+
+drop policy if exists "anon can read sessions" on public.sessions;
+create policy "anon can read sessions"
+  on public.sessions for select to anon
+  using (true);
+
+revoke insert, update, delete on public.system_logs from anon;
+revoke insert, update, delete on public.sessions    from anon;
+grant select on public.system_logs to anon;
+grant select on public.sessions    to anon;
 
 -- ---------------------------------------------------------------------------
 -- Aggregate view — read by the dashboard and by scripts/check-regression.mjs
@@ -149,3 +215,37 @@ group by build_version;
 alter view public.build_fps_summary set (security_invoker = on);
 
 grant select on public.build_fps_summary to anon;
+
+-- Per-session rollup. `outcome` is the interesting column: a session that stopped reporting
+-- without ever announcing an ending is one the player did not close normally. A crash rate per
+-- build is a far sharper quality signal than an average frame rate, and it costs nothing extra
+-- to collect — it falls out of data the client could not have faked on its way down.
+create or replace view public.session_summary as
+select
+  s.id,
+  s.build_version,
+  s.platform,
+  s.started_at,
+  s.last_seen_at,
+  s.ended_at,
+  s.ended_cleanly,
+  extract(epoch from (coalesce(s.ended_at, s.last_seen_at) - s.started_at))::numeric as duration_seconds,
+  count(l.id)                                              as sample_count,
+  round(avg(l.fps_rate)::numeric, 2)                       as avg_fps,
+  min(l.fps_rate)                                          as min_fps,
+  max(l.frame_time_max_ms)                                 as worst_frame_time_ms,
+  max(l.memory_used_mb) - min(l.memory_used_mb)            as memory_growth_mb,
+  case
+    when s.ended_at is not null and s.ended_cleanly then 'clean'
+    when s.ended_at is not null then 'ended_unclean'
+    -- Still reporting, or only just stopped: not yet evidence of anything.
+    when s.last_seen_at > now() - interval '2 minutes' then 'active'
+    else 'abandoned'
+  end                                                      as outcome
+from public.sessions s
+left join public.system_logs l on l.session_id = s.id
+group by s.id;
+
+alter view public.session_summary set (security_invoker = on);
+
+grant select on public.session_summary to anon;

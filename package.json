@@ -1,11 +1,12 @@
 {
   "name": "devinsight-dashboard",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Live performance telemetry pipeline for the Godot game Ascent.",
   "scripts": {
-    "test": "node --test scripts/",
+    "test": "node --test scripts/ lib/",
+    "test:godot": "godot --headless --path godot --script tests/test_logger_queue.gd",
     "check:regression": "node scripts/check-regression.mjs",
     "check:logger-sync": "node --test scripts/logger-sync.test.mjs",
     "serve": "python3 -m http.server 8000"

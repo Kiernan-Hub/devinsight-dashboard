@@ -5,8 +5,8 @@ game reports FPS and memory usage to a Postgres backend, which a live dashboard 
 time — and a CI gate fails the build if it regresses performance by more than 10% against the
 baseline that commit declares.
 
-**Pipeline:** Godot (`godot/system_logger.gd`) → Supabase (Postgres + REST API) → `index.html`
-dashboard (Chart.js), hosted on Vercel → GitHub Actions performance gate on every push.
+**Pipeline:** Godot (`godot/system_logger.gd`) → `POST /api/ingest` (Vercel Function) → Supabase
+(Postgres) → `index.html` dashboard (Chart.js) → GitHub Actions performance gate on every push.
 
 <img src="assets/architecture.svg" alt="Ascent telemetry pipeline: Godot client sends live FPS readings to Supabase every 5 seconds; on send failure it queues them to a local JSON file and bulk-flushes that queue back to Supabase over its own connection on reconnect, independent of live sends. Supabase feeds both the live dashboard and a GitHub Actions CI gate that fails the build on >10% FPS regression.">
 
@@ -73,9 +73,58 @@ A regression over 10% fails the check; a dip over 5% warns.
 ## Stack
 
 - **Godot** — game client, posts telemetry via `HTTPRequest`
-- **Supabase** — Postgres + REST API, RLS-locked anon key (insert/select only)
+- **Vercel Functions** — `api/ingest.js`, the only write path into the database
+- **Supabase** — Postgres, RLS-locked anon key (**read-only**)
 - **Vercel** — static dashboard hosting
 - **GitHub Actions** — unit tests + CI performance regression gate
+
+## The ingest API
+
+`POST /api/ingest` is the only way telemetry enters the database.
+
+```json
+{
+  "session": { "id": "<uuid v4>", "build_version": "0.5.0", "platform": "macOS" },
+  "samples": [
+    { "fps_rate": 60, "memory_used_mb": 92.4, "frame_time_p95_ms": 18.2,
+      "frame_time_max_ms": 51.0, "frames_sampled": 300, "created_at": "2026-09-09T12:00:00Z" }
+  ]
+}
+```
+
+**Why it exists.** The game used to write to Supabase directly with the anon key — a key that
+ships inside the game binary *and* inside the dashboard's JavaScript. "Anyone who has opened the
+dashboard can write anything to the telemetry table" was therefore load-bearing, and the table it
+guarded is the one the CI performance gate reads. Moving writes behind this endpoint does not
+make the client credential secret; nothing shipped in a binary is. It changes what that
+credential *can do*: append a validated sample to its own session, rather than write arbitrary
+rows. The key with real write power now exists only in server-side environment variables.
+
+**Design decisions worth defending:**
+
+- **`build_version` comes from the session, never the sample.** One session is one build by
+  definition. Letting each row carry its own version would let a client scatter measurements
+  across builds it never actually ran.
+- **Partial acceptance.** A batch with one malformed row is accepted, minus that row, and the
+  rejection is reported back. Rejecting the whole batch would make it a *poison pill*: the
+  offline queue retries anything that is not a success, so a single bad row would be retried
+  forever, never drain, and take every good row in the batch down with it.
+- **4xx and 5xx mean different things to the client.** A 5xx is re-queued for retry; a 4xx is
+  dropped, because a payload the server judges malformed will be judged malformed every time.
+  A database failure is therefore a 502, not a 400 — misreporting it would silently discard
+  good telemetry.
+- **Clean exits are reported; crashes are inferred.** The client says "I ended cleanly" on the
+  way out, and the server records a session that simply stops reporting as `abandoned`. A
+  crash, by definition, never reaches the shutdown handler — so the accurate signal is the
+  *absence* of one, which a dying client cannot falsify.
+
+### Environment variables
+
+| Variable | Where | Purpose |
+|---|---|---|
+| `SUPABASE_URL` | Vercel + GitHub Actions | Project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Vercel + GitHub Actions | The real write key. Never in client code. |
+| `INGEST_TOKEN` | Vercel + game client | Keeps casual traffic out of the table. Optional; blank disables the check. |
 
 ## Database
 
@@ -103,7 +152,10 @@ both handled explicitly rather than hoped away:
   written to the DOM with `textContent`, never interpolated into `innerHTML`, and the table
   constrains it to the shape a version string actually has.
 
-RLS grants anon `insert` and `select` only; `update` and `delete` are denied by omission.
+As of 0.5.0 the anon role is **read-only**: the insert policy is dropped and `insert`, `update`
+and `delete` are revoked. Writes go through `/api/ingest` with the service-role key. Constraints
+could bound how *absurd* a forged row was; they could never stop a plausible one. Removing the
+write grant is what actually closes the hole.
 
 ## Local checks
 
@@ -112,14 +164,22 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test
+npm test          # 37 tests: metric maths, gate verdicts, ingest validation, API behaviour
+npm run test:godot # queue behaviour, run headlessly in a real Godot runtime
 ```
 
-That covers the metric maths, the gate's verdict logic, and two consistency checks: that
-`build-manifest.json` agrees with the version the logger stamps, and that
-`godot/system_logger.gd` still matches `ascent/Scenes/system_logger.gd` — the copy the game
-actually runs. `ascent/` is gitignored (the game lives outside this repo on purpose), so that
-second check skips in CI and guards the copies locally, where they can drift.
+That covers the metric maths, the gate's verdict logic, ingest validation, the API's status
+codes, and two consistency checks: that `build-manifest.json` agrees with the version the logger
+stamps, and that `godot/system_logger.gd` still matches `ascent/Scenes/system_logger.gd` — the
+copy the game actually runs. `ascent/` is gitignored (the game lives outside this repo on
+purpose), so that second check skips in CI and guards the copies locally, where they can drift.
+
+`npm run test:godot` runs the offline queue's own tests inside a real Godot runtime, against a
+minimal harness project in `godot/`. The queue is the only part of the client with real state —
+it batches by session, survives restarts through a JSON file, caps its own size, and must never
+discard rows the server has not confirmed — and every bug found in it so far has been silent,
+data vanishing rather than anything crashing. It is worth testing directly rather than by
+watching a dashboard and hoping.
 
 To verify every dashboard feature without waiting for a running Godot session or configuring
 Supabase, open [`http://localhost:8000/?demo=1`](http://localhost:8000/?demo=1). Demo mode uses a
