@@ -29,8 +29,7 @@ create table if not exists public.sessions (
   started_at    timestamptz not null default now(),
   last_seen_at  timestamptz not null default now(),
   ended_at      timestamptz,
-  ended_cleanly boolean,
-  sample_count  integer     not null default 0
+  ended_cleanly boolean
 );
 
 create index if not exists sessions_build_started_idx

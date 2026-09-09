@@ -87,7 +87,7 @@ export default async function handler(req, res) {
     // Upsert the session first: system_logs.session_id references it, so the parent row has to
     // exist before the samples that point at it.
     await supabase("sessions?on_conflict=id", {
-      body: [sessionRow(session, { sampleCount: accepted.length })],
+      body: [sessionRow(session)],
       headers: { Prefer: "resolution=merge-duplicates,return=minimal" }
     });
 
