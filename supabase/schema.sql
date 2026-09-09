@@ -238,7 +238,14 @@ select
   s.last_seen_at,
   s.ended_at,
   s.ended_cleanly,
-  extract(epoch from (coalesce(s.ended_at, s.last_seen_at) - s.started_at))::numeric as duration_seconds,
+  -- Clamped at zero because the two ends of this subtraction come from different clocks:
+  -- started_at is filled by Postgres's now() default, last_seen_at is stamped by the ingest
+  -- function before the request reaches the database. A few hundred milliseconds of skew
+  -- between them is normal and produced negative durations on short sessions.
+  greatest(
+    0::numeric,
+    extract(epoch from (coalesce(s.ended_at, s.last_seen_at) - s.started_at))::numeric
+  ) as duration_seconds,
   count(l.id)                                              as sample_count,
   round(avg(l.fps_rate)::numeric, 2)                       as avg_fps,
   min(l.fps_rate)                                          as min_fps,

@@ -9,7 +9,17 @@ const BUILD_VERSION := "0.5.0"
 # client is. What changed is its blast radius: it can no longer write arbitrary rows into the
 # table the CI performance gate reads.
 const INGEST_URL = "https://devinsight-dashboard-delta.vercel.app/api/ingest"
-const INGEST_TOKEN = "in 4308jf4 oKLFEN03$*(#J"  # must match the server's INGEST_TOKEN env var exactly
+
+# The ingest token is deliberately NOT written here. This file is committed to a public
+# repository, and a token pasted into it is a token anyone can read and use to write telemetry
+# — including telemetry the CI performance gate then treats as real measurements.
+#
+# It is loaded at runtime instead, from (in order):
+#   1. res://ingest_token.txt  — lives inside the game project, which is gitignored
+#   2. the INGEST_TOKEN environment variable — for CI and headless runs
+# Blank means "send no token", which the server accepts only if it has no token configured.
+const TOKEN_FILE := "res://ingest_token.txt"
+var ingest_token: String = ""
 
 const QUEUE_FILE_PATH := "user://log_queue.json"
 const MAX_QUEUE_SIZE := 500
@@ -56,6 +66,9 @@ var session_ended_sent := false
 func _ready() -> void:
 	randomize()
 	session_id = _generate_uuid_v4()
+	ingest_token = _load_ingest_token()
+	if ingest_token == "":
+		push_warning("No ingest token found; telemetry will be rejected if the server requires one.")
 
 	add_child(http_request)
 	add_child(flush_request)
@@ -100,6 +113,19 @@ func _send_session_end() -> void:
 		"samples": []
 	}
 	flush_request.request(INGEST_URL, _headers(), HTTPClient.METHOD_POST, JSON.stringify(payload))
+
+func _load_ingest_token() -> String:
+	if FileAccess.file_exists(TOKEN_FILE):
+		var file = FileAccess.open(TOKEN_FILE, FileAccess.READ)
+		if file:
+			var contents = file.get_as_text()
+			file.close()
+			# strip_edges matters: an editor that appends a trailing newline would otherwise
+			# send a token that does not match the server's byte-for-byte.
+			return contents.strip_edges()
+	if OS.has_environment("INGEST_TOKEN"):
+		return OS.get_environment("INGEST_TOKEN").strip_edges()
+	return ""
 
 func _session_dict(ended: bool = false) -> Dictionary:
 	var data = {
@@ -187,8 +213,8 @@ func _headers() -> Array:
 	var headers = [
 		"Content-Type: application/json"
 	]
-	if INGEST_TOKEN != "":
-		headers.append("x-ingest-token: " + INGEST_TOKEN)
+	if ingest_token != "":
+		headers.append("x-ingest-token: " + ingest_token)
 	return headers
 
 func _on_http_request_request_completed(result, response_code, headers, body) -> void:
