@@ -289,7 +289,7 @@
 
     <section class="metrics" aria-label="Current performance metrics">
       <article class="metric"><div class="metric-label">Current FPS</div><div class="metric-row"><strong class="metric-value" id="currentFps">—</strong><span class="metric-unit">fps</span></div><div class="metric-meta" id="currentFpsMeta">Latest sample</div></article>
-      <article class="metric"><div class="metric-label">P95 frame time</div><div class="metric-row"><strong class="metric-value" id="p95FrameTime">—</strong><span class="metric-unit">ms</span></div><div class="metric-meta" id="averageFpsMeta">Average FPS —</div></article>
+      <article class="metric"><div class="metric-label">P95 frame time</div><div class="metric-row"><strong class="metric-value" id="p95FrameTime">—</strong><span class="metric-unit">ms</span></div><div class="metric-meta" id="p95Meta">Awaiting frame timings</div></article>
       <article class="metric"><div class="metric-label">Memory</div><div class="metric-row"><strong class="metric-value" id="currentMemory">—</strong><span class="metric-unit">MB</span></div><div class="metric-meta" id="memoryMeta">Latest sample</div></article>
       <article class="metric"><div class="metric-label">1% low FPS</div><div class="metric-row"><strong class="metric-value" id="onePercentLow">—</strong><span class="metric-unit">fps</span></div><div class="metric-meta" id="sampleCount">No samples yet</div></article>
     </section>
@@ -329,7 +329,7 @@
   </main>
 
   <script type="module">
-    import { compareBuilds, detectEvents, logsPath, summarizeLogs } from "./scripts/dashboard-core.mjs";
+    import { compareBuilds, detectEvents, logsPath, summarizeLogs, LOG_QUERY_LIMIT } from "./scripts/dashboard-core.mjs";
     const SUPABASE_URL = "https://savgtraqvbqkbblhhhxe.supabase.co";
     const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhdmd0cmFxdmJxa2JibGhoaHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTE5MjAsImV4cCI6MjEwMTQ2NzkyMH0.t6mC5d1a1P82j_NXGV_nLvrp5g4V3vfFuos37mrnq0w";
     const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
@@ -343,6 +343,10 @@
     let rangeMinutes = 5;
     let selectedBuild = "all";
     let latestBuilds = [];
+    // build-manifest.json is the single declaration of which build this commit produces.
+    // The CI gate reads the same file, so dashboard and gate never disagree about what
+    // "current build" means.
+    let manifest = null;
 
     const chartColors = {
       grid: "rgba(137, 148, 158, 0.11)",
@@ -380,18 +384,26 @@
         const isCurrentBuild = index >= 24;
         const base = isCurrentBuild ? 79 : 108;
         const drop = index === 34 || index === 43 ? 34 : 0;
+        const fps = Math.max(35, base + Math.sin(index / 2) * 5 - drop);
+        // Per-frame timings, as build 0.4.0+ reports them. The worst frame in an interval is
+        // far slower than the interval's average frame — which is the entire reason the
+        // logger measures every frame instead of sampling a smoothed FPS number.
+        const meanFrameMs = 1000 / fps;
         return {
           created_at: new Date(now - (47 - index) * 5_000).toISOString(),
-          build_version: isCurrentBuild ? "0.3.0" : "0.2.0",
-          fps_rate: Math.max(35, base + Math.sin(index / 2) * 5 - drop),
-          memory_used_mb: 89 + index * 0.08 + (index === 39 ? 9 : 0)
+          build_version: isCurrentBuild ? "0.4.0" : "0.3.0",
+          fps_rate: fps,
+          memory_used_mb: 89 + index * 0.08 + (index === 39 ? 9 : 0),
+          frame_time_p95_ms: meanFrameMs * 1.6,
+          frame_time_max_ms: meanFrameMs * (index === 34 || index === 43 ? 9 : 2.4),
+          frames_sampled: Math.round(fps * 5)
         };
       });
       return {
         logs,
         builds: [
-          { build_version: "0.3.0", avg_fps: 76.8, sample_count: 443 },
-          { build_version: "0.2.0", avg_fps: 108.1, sample_count: 518 }
+          { build_version: "0.4.0", avg_fps: 76.8, sample_count: 443 },
+          { build_version: "0.3.0", avg_fps: 108.1, sample_count: 518 }
         ]
       };
     }
@@ -426,7 +438,8 @@
       if (demoMode) {
         const data = demoData();
         if (path.includes("build_fps_summary")) return data.builds;
-        return selectedBuild === "all" ? data.logs : data.logs.filter(row => row.build_version === selectedBuild);
+        const rows = selectedBuild === "all" ? data.logs : data.logs.filter(row => row.build_version === selectedBuild);
+        return rows.slice().reverse(); // match the real query: newest first
       }
       const response = await fetch(`${SUPABASE_URL}${path}`, { headers });
       if (!response.ok) throw new Error(`Supabase returned ${response.status}`);
@@ -435,23 +448,40 @@
       return data;
     }
 
+    function clearMetrics(note) {
+      ["currentFps", "p95FrameTime", "onePercentLow", "currentMemory"].forEach(id => $(id).textContent = "—");
+      $("sampleCount").textContent = note;
+      $("currentFpsMeta").textContent = "Latest sample";
+      $("p95Meta").textContent = "Awaiting frame timings";
+      $("memoryMeta").textContent = "Latest sample";
+    }
+
     function renderMetrics(logs) {
-      if (!logs.length) {
-        ["currentFps", "p95FrameTime", "onePercentLow", "currentMemory"].forEach(id => $(id).textContent = "—");
-        $("sampleCount").textContent = "No samples yet";
-        return;
-      }
+      if (!logs.length) return clearMetrics("No samples yet");
+
       const latest = logs.at(-1);
       const summary = summarizeLogs(logs);
-      if (!summary) throw new Error("Telemetry contains invalid measurements");
+      // A window can legitimately hold nothing measurable — every sample zero-FPS while the
+      // game sat minimised, say. That is an empty state, not a failure: throwing here put the
+      // whole dashboard into a false "Offline" and stopped the charts from updating at all.
+      if (!summary) return clearMetrics(`${logs.length} samples, none measurable`);
 
       $("currentFps").textContent = summary.currentFps.toFixed(0);
       $("p95FrameTime").textContent = summary.p95FrameTime.toFixed(1);
       $("onePercentLow").textContent = summary.onePercentLow.toFixed(0);
       $("currentMemory").textContent = summary.currentMemory.toFixed(1);
       $("sampleCount").textContent = `${logs.length} visible samples`;
-      $("currentFpsMeta").textContent = `Build ${latest.build_version || "unversioned"}`;
-      $("averageFpsMeta").textContent = `Average ${summary.averageFps.toFixed(1)} FPS`;
+      $("currentFpsMeta").textContent =
+        `Build ${latest.build_version || "unversioned"} · avg ${summary.averageFps.toFixed(1)} FPS`;
+
+      // Say which of the two this number actually is. A percentile over 5-second FPS readings
+      // cannot see a single-frame stutter, so presenting it as a true P95 frame time would
+      // claim a resolution the data does not have.
+      $("p95Meta").textContent = summary.frameTimeSource === "measured"
+        ? `Measured over ${summary.framesSampled.toLocaleString()} frames` +
+          (summary.worstFrameMs ? ` · worst ${summary.worstFrameMs.toFixed(1)} ms` : "")
+        : "Approximated from FPS samples — pre-0.4.0 build";
+
       $("memoryMeta").textContent = `${summary.memoryDelta >= 0 ? "+" : ""}${summary.memoryDelta.toFixed(1)} MB over this window`;
     }
 
@@ -490,9 +520,19 @@
 
     function renderBuild(builds) {
       if (!builds.length) return;
-      const latest = selectedBuild === "all" ? builds[0] : builds.find(build => build.build_version === selectedBuild) || builds[0];
+      // "Current build" is the one this commit declares in build-manifest.json — the same
+      // build the CI gate judges. Falling back to whichever row was seen most recently made
+      // the dashboard call an *old* build "latest" the moment anyone replayed it, silently
+      // inverting the comparison.
+      const declared = manifest && builds.find(build => build.build_version === manifest.build_version);
+      const latest = selectedBuild === "all"
+        ? (declared || builds[0])
+        : builds.find(build => build.build_version === selectedBuild) || declared || builds[0];
       const baselineValue = $("baselineBuild").value;
-      const previous = builds.find(build => build.build_version === baselineValue) || builds.find(build => build.build_version !== latest.build_version);
+      const previous =
+        builds.find(build => build.build_version === baselineValue) ||
+        (manifest && builds.find(build => build.build_version === manifest.baseline_version)) ||
+        builds.find(build => build.build_version !== latest.build_version);
       $("buildVersion").textContent = latest.build_version || "unversioned";
       $("buildAverage").textContent = `${Number(latest.avg_fps).toFixed(1)} FPS`;
       $("buildSamples").textContent = latest.sample_count ?? "—";
@@ -518,29 +558,89 @@
       }
     }
 
-    function renderEvents(logs) {
-      const events = detectEvents(logs).slice(0, 8);
-      $("performanceEvents").innerHTML = events.length ? events.map(event => {
-        const time = new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-        return `<button class="event ${event.type}" type="button" data-index="${event.index}"><span class="event-time">${time}</span><span><strong>${event.label}</strong><small>${event.detail}</small></span></button>`;
-      }).join("") : '<div class="event"><span class="event-time">—</span><span><strong>No events in this range</strong><small>Build boundaries and anomalies appear here</small></span></div>';
-      $("performanceEvents").querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
+    // Builds one event row out of DOM nodes rather than an HTML string. `label` and `detail`
+    // carry build_version, which comes from the database — and the anon key that writes that
+    // table is public, so any stranger can choose its contents. Interpolating it into
+    // innerHTML made that a stored-XSS sink; textContent renders it as the text it is.
+    function eventRow(event) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `event ${event.type}`;
+      button.dataset.index = String(event.index);
+
+      const time = document.createElement("span");
+      time.className = "event-time";
+      time.textContent = new Date(event.time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+      const label = document.createElement("strong");
+      label.textContent = event.label;
+      const detail = document.createElement("small");
+      detail.textContent = event.detail;
+
+      const body = document.createElement("span");
+      body.append(label, detail);
+      button.append(time, body);
+
+      button.addEventListener("click", () => {
         const index = Number(button.dataset.index);
         fpsChart?.setActiveElements([{ datasetIndex: 0, index }]);
         fpsChart?.tooltip?.setActiveElements([{ datasetIndex: 0, index }], { x: 0, y: 0 });
         fpsChart?.update();
         $("fpsChart").scrollIntoView({ behavior: "smooth", block: "center" });
-      }));
+      });
+      return button;
+    }
+
+    function emptyEventRow() {
+      const row = document.createElement("div");
+      row.className = "event";
+      const time = document.createElement("span");
+      time.className = "event-time";
+      time.textContent = "—";
+      const label = document.createElement("strong");
+      label.textContent = "No events in this range";
+      const detail = document.createElement("small");
+      detail.textContent = "Build boundaries and anomalies appear here";
+      const body = document.createElement("span");
+      body.append(label, detail);
+      row.append(time, body);
+      return row;
+    }
+
+    function renderEvents(logs) {
+      const events = detectEvents(logs).slice(0, 8);
+      const container = $("performanceEvents");
+      container.replaceChildren(...(events.length ? events.map(eventRow) : [emptyEventRow()]));
+    }
+
+    let renderedVersions = "";
+
+    function option(value, label) {
+      const element = document.createElement("option");
+      element.value = value;
+      element.textContent = label; // never innerHTML: build_version is attacker-choosable
+      return element;
     }
 
     function populateBuildControls(builds) {
       const versions = builds.map(build => build.build_version).filter(Boolean);
-      const currentFilter = $("buildFilter").value;
-      $("buildFilter").innerHTML = '<option value="all">All builds</option>' + versions.map(version => `<option value="${version}">${version}</option>`).join("");
-      $("buildFilter").value = versions.includes(currentFilter) ? currentFilter : "all";
-      const currentBaseline = $("baselineBuild").value;
-      $("baselineBuild").innerHTML = versions.map((version, index) => `<option value="${version}"${index === 1 ? " selected" : ""}>${version}</option>`).join("");
-      if (versions.includes(currentBaseline)) $("baselineBuild").value = currentBaseline;
+
+      // Rebuilding these <select> elements on every 5-second refresh closed the dropdown
+      // under the cursor of anyone mid-selection. The option list only changes when a new
+      // build appears, so only rebuild when it actually differs.
+      const signature = JSON.stringify(versions);
+      if (signature === renderedVersions) return;
+      renderedVersions = signature;
+
+      const filter = $("buildFilter");
+      const currentFilter = filter.value;
+      filter.replaceChildren(option("all", "All builds"), ...versions.map(v => option(v, v)));
+      filter.value = versions.includes(currentFilter) ? currentFilter : "all";
+
+      const baseline = $("baselineBuild");
+      const currentBaseline = baseline.value;
+      baseline.replaceChildren(...versions.map(v => option(v, v)));
+      baseline.value = versions.includes(currentBaseline) ? currentBaseline : (versions[1] ?? versions[0] ?? "");
     }
 
     function showNotice(message, type = "error") {
@@ -559,17 +659,23 @@
       refreshing = true;
       setConnection("", "Updating");
       try {
-        const [logsDescending, builds] = await Promise.all([
+        const [newestFirst, builds] = await Promise.all([
           fetchJson(logsPath(rangeMinutes, selectedBuild)),
           fetchJson("/rest/v1/build_fps_summary?select=*&order=last_seen.desc")
         ]);
-        const logs = logsDescending;
+        // The query asks for the newest rows first so a window bigger than the row limit
+        // yields recent data; charts read left-to-right in time, so flip it back here.
+        const truncated = newestFirst.length >= LOG_QUERY_LIMIT;
+        const logs = [...newestFirst].reverse();
         latestBuilds = builds;
         populateBuildControls(builds);
         renderMetrics(logs);
         renderCharts(logs);
         renderEvents(logs);
         $("notice").className = "notice";
+        if (truncated) {
+          showNotice(`Showing the most recent ${LOG_QUERY_LIMIT.toLocaleString()} samples — this window holds more.`, "regression");
+        }
         renderBuild(builds);
         setConnection("live", demoMode ? "Demo data" : "Live");
         $("updatedAt").textContent = `UPDATED ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
@@ -607,6 +713,19 @@
       $("demoLink").href = location.pathname;
       $("demoLink").textContent = "View live";
     }
+    // Best-effort: the dashboard still works without the manifest, it just falls back to
+    // "most recently seen" for the current build.
+    async function loadManifest() {
+      if (demoMode) return { build_version: "0.4.0", baseline_version: "0.3.0" };
+      try {
+        const response = await fetch("./build-manifest.json", { cache: "no-cache" });
+        return response.ok ? await response.json() : null;
+      } catch {
+        return null;
+      }
+    }
+
+    manifest = await loadManifest();
     refresh();
     setInterval(refresh, 5000);
   </script>

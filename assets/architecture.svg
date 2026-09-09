@@ -1,0 +1,75 @@
+<svg viewBox="0 0 980 580" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ascent telemetry pipeline: the Godot client sends live FPS readings to Supabase every 5 seconds; on send failure it queues them to a local JSON file instead of dropping them, then bulk-flushes that queue back to Supabase over its own connection on reconnect, independent of live sends. Supabase feeds both a live Chart.js dashboard and a GitHub Actions CI gate that fails the build if average FPS regresses more than 10% versus the prior build_version.">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+  </defs>
+
+  <style>
+    .box { fill: #ffffff; stroke: #334155; stroke-width: 1.5; }
+    .label { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 14px; fill: #1e293b; font-weight: 600; }
+    .sublabel { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #475569; }
+    .arrowlabel { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #475569; }
+    .arrowlabel-accent { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #b45309; font-weight: 600; }
+    .edge { stroke: #475569; stroke-width: 1.5; fill: none; }
+    .edge-accent { stroke: #b45309; stroke-width: 2; fill: none; }
+  </style>
+
+  <!-- Godot client -->
+  <rect class="box" x="30" y="215" width="180" height="80" rx="6"/>
+  <text class="label" x="120" y="248" text-anchor="middle">Godot Client</text>
+  <text class="sublabel" x="120" y="266" text-anchor="middle">system_logger.gd</text>
+  <text class="sublabel" x="120" y="281" text-anchor="middle">reads FPS every 5s</text>
+
+  <!-- Local queue -->
+  <rect class="box" x="170" y="420" width="200" height="80" rx="6"/>
+  <text class="label" x="270" y="453" text-anchor="middle">log_queue.json</text>
+  <text class="sublabel" x="270" y="471" text-anchor="middle">local disk, on-device</text>
+  <text class="sublabel" x="270" y="486" text-anchor="middle">survives app restart</text>
+
+  <!-- Supabase -->
+  <rect class="box" x="420" y="215" width="200" height="80" rx="6"/>
+  <text class="label" x="520" y="245" text-anchor="middle">Supabase</text>
+  <text class="sublabel" x="520" y="263" text-anchor="middle">Postgres + REST</text>
+  <text class="sublabel" x="520" y="278" text-anchor="middle">RLS-locked anon key, insert/select only</text>
+
+  <!-- Dashboard -->
+  <rect class="box" x="730" y="60" width="220" height="80" rx="6"/>
+  <text class="label" x="840" y="93" text-anchor="middle">index.html Dashboard</text>
+  <text class="sublabel" x="840" y="111" text-anchor="middle">Chart.js, static, on Vercel</text>
+  <text class="sublabel" x="840" y="126" text-anchor="middle">polls Supabase REST for new rows</text>
+
+  <!-- CI gate -->
+  <rect class="box" x="730" y="390" width="220" height="110" rx="6"/>
+  <text class="label" x="840" y="418" text-anchor="middle">GitHub Actions</text>
+  <text class="sublabel" x="840" y="436" text-anchor="middle">perf-gate.yml</text>
+  <text class="sublabel" x="840" y="454" text-anchor="middle">compares avg FPS: build_version N</text>
+  <text class="sublabel" x="840" y="469" text-anchor="middle">vs N-1, via build_fps_summary view</text>
+  <text class="sublabel" x="840" y="486" text-anchor="middle">fails CI on &gt;10% regression</text>
+
+  <!-- Godot -> Supabase: live send -->
+  <line class="edge" x1="210" y1="240" x2="418" y2="240" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="314" y="230" text-anchor="middle">POST reading (live send)</text>
+
+  <!-- Godot -> Queue: on failure -->
+  <path class="edge" d="M 100 295 L 100 400 Q 100 420 120 420 L 168 448" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="60" y="360" text-anchor="middle">on send</text>
+  <text class="arrowlabel" x="60" y="374" text-anchor="middle">failure</text>
+
+  <!-- Queue -> Supabase: bulk flush, own connection (the differentiator) -->
+  <path class="edge-accent" d="M 370 445 Q 470 500 520 445 L 520 297" marker-end="url(#arrow-accent)"/>
+  <text class="arrowlabel-accent" x="470" y="530" text-anchor="middle">bulk flush on reconnect</text>
+  <text class="arrowlabel-accent" x="470" y="545" text-anchor="middle">own HTTPRequest — independent of live sends</text>
+
+  <!-- Supabase -> Dashboard -->
+  <line class="edge" x1="600" y1="215" x2="760" y2="142" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="710" y="170" text-anchor="middle">reads via REST</text>
+
+  <!-- Supabase -> CI -->
+  <line class="edge" x1="600" y1="295" x2="760" y2="388" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="710" y="352" text-anchor="middle">queries per build_version</text>
+
+</svg>

@@ -3,10 +3,13 @@ name: Performance Regression Gate
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  check-regression:
+  test:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,8 +18,29 @@ jobs:
         with:
           node-version: 20
 
+      # These cover the calculations behind every number the dashboard and the gate report.
+      # They previously existed but nothing ran them.
+      - name: Run tests
+        run: npm test
+
+  check-regression:
+    name: FPS regression gate
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # SUPABASE_SERVICE_ROLE_KEY is the one that matters: the anon key is published in the
+      # dashboard's JavaScript, so a gate reading with it is a gate any stranger can move by
+      # inserting rows. The script falls back to the anon key with a loud warning if the
+      # service-role secret is not set.
       - name: Check for FPS regression
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: node scripts/check-regression.mjs
+        run: npm run check:regression
