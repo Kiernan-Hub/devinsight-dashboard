@@ -197,6 +197,53 @@ this comes up again).
   a fresh session in a fresh clone, it **will not be there** — that's expected, not a problem,
   per the "game lives outside the repo" design.
 
+## Update — audit session, 2026-09-10 (cloud environment)
+
+Picked up option 4 below (fresh skeptical cross-phase audit). Three findings, all real, two
+fixed and pushed to `claude/optimistic-galileo-uz4e47`; one open and needing a decision.
+
+**Fixed — `npm test` was broken on Node 22 (commit `186674e`).** The script ran
+`node --test scripts/ lib/`, passing directories as arguments. Node 20 scans a directory
+argument; Node 22 resolves it as a module and dies with MODULE_NOT_FOUND before running a
+single test — the whole suite failed, 0 of 57, while every file passed when named explicitly.
+CI never saw it because both workflows pin `node-version: 20` while `package.json` declares
+`engines.node ">=20"`. Fixed by passing shell-expanded file globs, and the unit-test job is now
+a matrix over Node 20 and 22 so a version-dependent break can't hide again. Note for anyone
+tempted to "simplify" this back: Node's own `--test` glob support only landed in 22, so
+`--test "scripts/*.test.mjs"` would invert the bug — green on 22, broken on the 20 CI runs.
+
+**Fixed — two protections that existed in source but not in deployment (commit `cdee2e4`).**
+Both in `api/ingest.js`:
+- The token check was `if (INGEST_TOKEN) { ...check... }`, so an unset variable skipped
+  authentication *entirely* rather than weakening it — an open endpoint writing with the
+  service-role key. Directly relevant to the still-pending token rotation: a
+  delete-then-set rotation would have opened exactly that window silently. Now returns 503.
+- The 256 KB body limit only ran when `req.body` was a string. Vercel parses
+  `application/json` into an object before the handler runs, so it applied to zero real
+  requests. Now checks `Content-Length`, with the string path kept for chunked requests.
+
+Both have regression tests that were confirmed to fail against the old code first. Suite is
+now 60 tests: 59 pass, 1 skip (logger-sync, correctly skipping without `ascent/`).
+
+**Open — duplicate rows on a partial write.** `api/ingest.js` writes `sessions`, then
+`system_logs`, then `gameplay_events` as three sequential un-batched requests. If `system_logs`
+succeeds and `gameplay_events` then fails, the handler returns 502; the Godot client re-queues
+any 5xx and retries the *whole* batch, so those samples get inserted a second time. There is no
+dedup key on `system_logs` to stop it. Low likelihood, but the consequence is inflated sample
+counts and skewed averages feeding the CI regression gate — and it's invisible when Phase 1
+(retry semantics) and Phase 2 (the events table) are each reviewed alone, which is exactly the
+class of bug the cross-phase pass was for. Not fixed here because the sane fixes all need a
+decision: a client-generated idempotency key with a unique constraint (needs a schema change on
+top of the already-unapplied migration), or writing all three tables in one Postgres function
+call so it's atomic. Worth raising with the user before picking.
+
+**Environment caveat, important for the blocker above.** This session ran in the cloud, not on
+the user's Mac. `savgtraqvbqkbblhhhxe.supabase.co` is blocked by the network policy (403 on
+CONNECT — confirmed, not assumed), Godot is not installed, and `ascent/` is absent. So **the
+migration status was NOT re-verified this session** and neither was the token rotation. Both
+remain exactly as described in "The one blocker" above. `npm test` runs fine;
+`npm run test:godot` and `npm run benchmark` cannot run here.
+
 ## Open threads / natural next steps
 
 Nothing is currently broken or half-finished. These are options, not obligations — pick based
