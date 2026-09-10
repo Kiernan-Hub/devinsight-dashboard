@@ -83,15 +83,75 @@ end $$;
 create index if not exists system_logs_session_idx
   on public.system_logs (session_id, created_at asc);
 
+-- Gameplay context, sampled alongside each performance reading (0.6.0+).
+--
+-- This is what turns "frame time doubled" into "frame time doubled at height 4200 with 180
+-- live platforms". A frame-rate chart can only tell you that something got slower; these
+-- columns are what let you ask why, and they cost one dictionary lookup per report.
+alter table public.system_logs add column if not exists height         numeric(12, 2);
+alter table public.system_logs add column if not exists platform_count integer;
+alter table public.system_logs add column if not exists entity_count   integer;
+alter table public.system_logs add column if not exists lava_speed     numeric(10, 3);
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'system_logs_context_sane') then
+    alter table public.system_logs
+      add constraint system_logs_context_sane check (
+        (height         is null or (height         >= -1000000 and height <= 1000000)) and
+        (platform_count is null or (platform_count >= 0 and platform_count <= 100000)) and
+        (entity_count   is null or (entity_count   >= 0 and entity_count  <= 1000000)) and
+        (lava_speed     is null or (lava_speed     >= 0 and lava_speed    <= 100000))
+      );
+  end if;
+end $$;
+
+-- Supports the height-band correlation view below.
+create index if not exists system_logs_build_height_idx
+  on public.system_logs (build_version, height) where height is not null;
+
+-- ---------------------------------------------------------------------------
+-- Gameplay events
+--
+-- Discrete things that happened, as opposed to the periodic performance samples. Deaths and
+-- run boundaries are what let a frame-time spike be read as "the player died here" rather than
+-- an unexplained anomaly.
+-- ---------------------------------------------------------------------------
+
+create table if not exists public.gameplay_events (
+  id            bigint generated always as identity primary key,
+  session_id    uuid        not null references public.sessions (id) on delete cascade,
+  created_at    timestamptz not null default now(),
+  build_version text        not null,
+  event_type    text        not null,
+  height        numeric(12, 2),
+  detail        jsonb
+);
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'gameplay_events_type_known') then
+    -- A closed vocabulary: an invented event type should fail loudly at the door rather than
+    -- accumulate in a table no query knows to look at.
+    alter table public.gameplay_events
+      add constraint gameplay_events_type_known
+      check (event_type in ('run_start', 'run_end', 'death', 'powerup', 'checkpoint'));
+  end if;
+end $$;
+
+create index if not exists gameplay_events_session_idx
+  on public.gameplay_events (session_id, created_at asc);
+
+create index if not exists gameplay_events_build_type_idx
+  on public.gameplay_events (build_version, event_type, created_at desc);
+
 -- ---------------------------------------------------------------------------
 -- Constraints
 --
--- The anon key can insert (that is how the game reports), and the anon key is public
--- by necessity — it ships inside the game binary and the dashboard's JavaScript. These
--- constraints are therefore the only thing standing between a stranger with the key and
--- arbitrary garbage in the table that the CI gate would then treat as real measurements.
--- They cannot stop a determined attacker writing *plausible* rows; see README for why
--- the CI gate reads with the service-role key instead.
+-- Defence in depth behind /api/ingest, which validates the same ranges before anything gets
+-- this far. The constraints matter anyway: they are what holds if the ingest function is ever
+-- bypassed, misconfigured, or given a bug, and they document the domain of each column in the
+-- one place that cannot drift from the data.
 -- ---------------------------------------------------------------------------
 
 do $$
@@ -170,8 +230,9 @@ create index if not exists system_logs_build_created_idx
 -- there is no update or delete policy either.
 -- ---------------------------------------------------------------------------
 
-alter table public.system_logs enable row level security;
-alter table public.sessions    enable row level security;
+alter table public.system_logs     enable row level security;
+alter table public.sessions        enable row level security;
+alter table public.gameplay_events enable row level security;
 
 -- Removes the grant that let anyone holding the public key write telemetry.
 drop policy if exists "anon can insert telemetry" on public.system_logs;
@@ -186,10 +247,17 @@ create policy "anon can read sessions"
   on public.sessions for select to anon
   using (true);
 
-revoke insert, update, delete on public.system_logs from anon;
-revoke insert, update, delete on public.sessions    from anon;
-grant select on public.system_logs to anon;
-grant select on public.sessions    to anon;
+drop policy if exists "anon can read events" on public.gameplay_events;
+create policy "anon can read events"
+  on public.gameplay_events for select to anon
+  using (true);
+
+revoke insert, update, delete on public.system_logs     from anon;
+revoke insert, update, delete on public.sessions        from anon;
+revoke insert, update, delete on public.gameplay_events from anon;
+grant select on public.system_logs     to anon;
+grant select on public.sessions        to anon;
+grant select on public.gameplay_events to anon;
 
 -- ---------------------------------------------------------------------------
 -- Aggregate view — read by the dashboard and by scripts/check-regression.mjs
@@ -265,3 +333,54 @@ group by s.id;
 alter view public.session_summary set (security_invoker = on);
 
 grant select on public.session_summary to anon;
+
+-- ---------------------------------------------------------------------------
+-- Performance against progress
+--
+-- The point of collecting gameplay context. Buckets samples into 500-unit height bands and
+-- reports how the game performs in each, per build.
+--
+-- A frame-rate chart over time can only say that something got slower. This says *where* in
+-- the game it got slower, and puts the likely cause — how many platforms are alive in that
+-- band — in the adjacent column. "Frame time doubles above 4000 and platform count triples in
+-- the same band" is a bug report; "FPS went down" is not.
+-- ---------------------------------------------------------------------------
+
+drop view if exists public.build_perf_by_height;
+create view public.build_perf_by_height as
+select
+  build_version,
+  (floor(height / 500) * 500)::integer                          as height_band,
+  count(*)                                                      as sample_count,
+  round(avg(fps_rate)::numeric, 2)                              as avg_fps,
+  min(fps_rate)                                                 as min_fps,
+  round(avg(frame_time_p95_ms)::numeric, 3)                     as avg_frame_time_p95_ms,
+  max(frame_time_max_ms)                                        as worst_frame_time_ms,
+  round(avg(platform_count)::numeric, 1)                        as avg_platform_count,
+  max(platform_count)                                           as max_platform_count,
+  round(avg(entity_count)::numeric, 1)                          as avg_entity_count,
+  round(avg(memory_used_mb)::numeric, 2)                        as avg_memory_mb
+from public.system_logs
+where height is not null
+group by build_version, floor(height / 500);
+
+alter view public.build_perf_by_height set (security_invoker = on);
+
+grant select on public.build_perf_by_height to anon;
+
+-- Where runs actually end, per build. A death band that shifts between builds is a difficulty
+-- change; one that coincides with a frame-time cliff in build_perf_by_height is a performance
+-- problem that is costing players runs.
+drop view if exists public.death_distribution;
+create view public.death_distribution as
+select
+  build_version,
+  (floor(height / 500) * 500)::integer as height_band,
+  count(*)                             as deaths
+from public.gameplay_events
+where event_type = 'death' and height is not null
+group by build_version, floor(height / 500);
+
+alter view public.death_distribution set (security_invoker = on);
+
+grant select on public.death_distribution to anon;

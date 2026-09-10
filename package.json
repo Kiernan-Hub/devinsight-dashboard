@@ -1,6 +1,6 @@
 {
   "name": "devinsight-dashboard",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Live performance telemetry pipeline for the Godot game Ascent.",

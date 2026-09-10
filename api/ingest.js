@@ -9,7 +9,7 @@
 // validated sample to your own session" instead of "write arbitrary rows". The database key
 // with real write power now lives only here, in server-side environment variables.
 
-import { normalizeIngest, sessionRow, MAX_SAMPLES_PER_REQUEST } from "../lib/ingest-core.mjs";
+import { normalizeIngest, sessionRow, MAX_SAMPLES_PER_REQUEST, MAX_EVENTS_PER_REQUEST } from "../lib/ingest-core.mjs";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -81,7 +81,7 @@ export default async function handler(req, res) {
     return send(res, result.status, { error: result.error });
   }
 
-  const { session, accepted, rejected } = result;
+  const { session, accepted, acceptedEvents, rejected } = result;
 
   try {
     // Upsert the session first: system_logs.session_id references it, so the parent row has to
@@ -94,6 +94,13 @@ export default async function handler(req, res) {
     if (accepted.length) {
       await supabase("system_logs", {
         body: accepted,
+        headers: { Prefer: "return=minimal" }
+      });
+    }
+
+    if (acceptedEvents.length) {
+      await supabase("gameplay_events", {
+        body: acceptedEvents,
         headers: { Prefer: "return=minimal" }
       });
     }
@@ -111,8 +118,12 @@ export default async function handler(req, res) {
   return send(res, 200, {
     session_id: session.id,
     accepted: accepted.length,
+    accepted_events: acceptedEvents.length,
     rejected: rejected.length,
     ...(rejected.length ? { rejections: rejected.slice(0, 10) } : {}),
-    limits: { max_samples_per_request: MAX_SAMPLES_PER_REQUEST }
+    limits: {
+      max_samples_per_request: MAX_SAMPLES_PER_REQUEST,
+      max_events_per_request: MAX_EVENTS_PER_REQUEST
+    }
   });
 }

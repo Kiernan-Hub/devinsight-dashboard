@@ -25,6 +25,8 @@ func _initialize() -> void:
 	_run("an in-flight batch is never trimmed out from under the server", func(): _test_trim_protects_inflight())
 	_run("a successful flush removes only the rows it carried", func(): _test_flush_removes_only_sent())
 	_run("legacy flat queue files keep their original build version", func(): _test_legacy_migration())
+	_run("the context provider decorates each sample", func(): _test_context_provider())
+	_run("events queue, cap, and survive a restart", func(): _test_events())
 
 	print("")
 	if failures == 0:
@@ -167,6 +169,63 @@ func _test_legacy_migration() -> void:
 		"fps_rate should be cast back to an int on load")
 	_check(not fresh.queue[0]["samples"][0].has("build_version"),
 		"per-sample build_version should move up to the session")
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(logger.QUEUE_FILE_PATH))
+	logger.free()
+	fresh.free()
+
+
+func _test_context_provider() -> void:
+	var logger = _new_logger()
+	_check(logger._gameplay_context().is_empty(), "no provider registered should yield no context")
+
+	logger.register_context_provider(func(): return {"height": 4210.5, "platform_count": 182})
+	var context = logger._gameplay_context()
+	_check(context.get("height") == 4210.5, "provider height should reach the sample")
+	_check(context.get("platform_count") == 182, "provider platform_count should reach the sample")
+
+	# A provider that returns the wrong type must not take the logger down with it — telemetry
+	# is a bolt-on, and a bug in it should never break the game it is measuring.
+	logger.register_context_provider(func(): return "not a dictionary")
+	_check(logger._gameplay_context().is_empty(), "a malformed provider result should degrade to no context")
+	logger.free()
+
+func _test_events() -> void:
+	var logger = _new_logger()
+	logger.log_event("death", 4210.0, {"cause": "lava"})
+	logger.log_event("powerup", 900.0)
+	_check(logger.pending_events.size() == 2, "both events should be pending")
+	_check(logger.pending_events[0]["event_type"] == "death", "event type should round-trip")
+	_check(logger.pending_events[0]["height"] == 4210.0, "event height should round-trip")
+	_check(logger.pending_events[0]["detail"]["cause"] == "lava", "event detail should round-trip")
+	_check(not logger.pending_events[1].has("detail"), "an empty detail should be omitted entirely")
+
+	# Overflow the event backlog; the two in flight must be protected exactly like samples.
+	logger.in_flight_event_count = 2
+	for i in logger.MAX_EVENT_QUEUE + 10:
+		logger.log_event("death", float(i))
+	_check(logger.pending_events.size() == logger.MAX_EVENT_QUEUE,
+		"event queue should cap at %d, held %d" % [logger.MAX_EVENT_QUEUE, logger.pending_events.size()])
+	_check(logger.pending_events[0]["event_type"] == "death" and logger.pending_events[0]["height"] == 4210.0,
+		"an in-flight event was trimmed away")
+
+	# A successful send clears only the events that were actually in the request.
+	logger.in_flight_event_count = 2
+	var before = logger.pending_events.size()
+	logger._on_http_request_request_completed(HTTPRequest.RESULT_SUCCESS, 200, [], PackedByteArray())
+	_check(logger.pending_events.size() == before - 2,
+		"expected 2 events cleared, went from %d to %d" % [before, logger.pending_events.size()])
+
+	# Events must survive a restart alongside the sample backlog.
+	logger._enqueue(_sample(60))
+	logger._save_queue()
+	var fresh = LoggerScript.new()
+	fresh.session_id = fresh._generate_uuid_v4()
+	fresh._load_queue()
+	_check(fresh.pending_events.size() == logger.pending_events.size(),
+		"events should persist across a restart: saved %d, loaded %d"
+			% [logger.pending_events.size(), fresh.pending_events.size()])
+	_check(fresh.queue.size() > 0, "the sample backlog should still load from the new file format")
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(logger.QUEUE_FILE_PATH))
 	logger.free()

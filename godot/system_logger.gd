@@ -1,5 +1,5 @@
 extends Node
-const BUILD_VERSION := "0.5.0"
+const BUILD_VERSION := "0.6.0"
 
 # Telemetry now goes to our own ingest API rather than straight into Supabase. The database
 # credential that can actually write lives on the server; this client holds only a token that
@@ -27,6 +27,11 @@ const MAX_QUEUE_SIZE := 500
 # enormous insert that is likely to time out and then be retried forever. Must not exceed the
 # server's MAX_SAMPLES_PER_REQUEST.
 const MAX_FLUSH_BATCH := 100
+# Must not exceed the server's MAX_EVENTS_PER_REQUEST.
+const MAX_EVENT_BATCH := 100
+# Discrete events are far rarer than samples, but a death loop could still produce them
+# quickly, so the backlog is bounded the same way.
+const MAX_EVENT_QUEUE := 500
 # Bounds memory if the report timer is ever starved: 5s at 240fps is ~1200 frames.
 const MAX_FRAME_SAMPLES := 4000
 
@@ -62,6 +67,17 @@ var frame_times_ms: Array = []
 # into "what happened during this particular play session".
 var session_id: String = ""
 var session_ended_sent := false
+
+# The game registers a Callable here that returns a Dictionary of gameplay context — height,
+# live platform count, lava speed. The logger calls it once per report and never learns
+# anything else about the game, so telemetry stays a bolt-on rather than something the
+# gameplay code has to know about.
+var context_provider: Callable = Callable()
+
+# Events waiting to go out, and the count currently inside the in-flight flush request. Same
+# ownership rule as samples: nothing may remove an event the server has not confirmed.
+var pending_events: Array = []
+var in_flight_event_count: int = 0
 
 func _ready() -> void:
 	randomize()
@@ -114,6 +130,43 @@ func _send_session_end() -> void:
 	}
 	flush_request.request(INGEST_URL, _headers(), HTTPClient.METHOD_POST, JSON.stringify(payload))
 
+# --- public API -------------------------------------------------------------
+
+# Register a Callable returning a Dictionary such as:
+#   { "height": 4210.5, "platform_count": 182, "entity_count": 940, "lava_speed": 88.2 }
+# Any subset is fine; unknown keys are ignored by the server and missing ones stored as null.
+func register_context_provider(provider: Callable) -> void:
+	context_provider = provider
+
+# Record something that happened, as opposed to something that is continuously true.
+# event_type must be one of the server's known types: run_start, run_end, death, powerup,
+# checkpoint. An unknown type is rejected at the door rather than accumulating unqueried.
+func log_event(event_type: String, height = null, detail: Dictionary = {}) -> void:
+	var event = {
+		"event_type": event_type,
+		"created_at": Time.get_datetime_string_from_system(true, true) + "Z"
+	}
+	if height != null:
+		event["height"] = float(height)
+	if not detail.is_empty():
+		event["detail"] = detail
+
+	pending_events.append(event)
+	while pending_events.size() > MAX_EVENT_QUEUE and pending_events.size() > in_flight_event_count:
+		pending_events.remove_at(in_flight_event_count)
+	_save_queue()
+
+# --- internals --------------------------------------------------------------
+
+func _gameplay_context() -> Dictionary:
+	if not context_provider.is_valid():
+		return {}
+	var context = context_provider.call()
+	if not (context is Dictionary):
+		push_warning("Context provider returned %s, expected Dictionary" % typeof(context))
+		return {}
+	return context
+
 func _load_ingest_token() -> String:
 	if FileAccess.file_exists(TOKEN_FILE):
 		var file = FileAccess.open(TOKEN_FILE, FileAccess.READ)
@@ -159,6 +212,7 @@ func _on_timer_timeout() -> void:
 			data["frame_time_max_ms"] = snapped(frame_times_ms.max(), 0.001)
 			data["frames_sampled"] = frames
 		frame_times_ms.clear()
+		data.merge(_gameplay_context())
 		_send_entry(data)
 
 	if not is_flushing and not queue.is_empty():
@@ -179,13 +233,17 @@ func _percentile(values: Array, quantile: float) -> float:
 func _send_entry(data: Dictionary) -> void:
 	is_sending = true
 	in_flight_entry = data
+	in_flight_event_count = mini(pending_events.size(), MAX_EVENT_BATCH)
 	var payload = {
 		"session": _session_dict(),
 		"samples": [data]
 	}
+	if in_flight_event_count > 0:
+		payload["events"] = pending_events.slice(0, in_flight_event_count)
 	var err = http_request.request(INGEST_URL, _headers(), HTTPClient.METHOD_POST, JSON.stringify(payload))
 	if err != OK:
 		is_sending = false
+		in_flight_event_count = 0
 		_enqueue(data)
 
 func _flush_queue() -> void:
@@ -221,7 +279,18 @@ func _on_http_request_request_completed(result, response_code, headers, body) ->
 	is_sending = false
 	print("Ingest response code: ", response_code)
 
-	if _is_success(response_code, result):
+	var succeeded = _is_success(response_code, result)
+	# A 4xx is permanent: the server will judge this payload malformed every time, so retrying
+	# it forever would block everything behind it. Either outcome clears the events that were
+	# in flight; only a 5xx or a network failure leaves them queued for another attempt.
+	if succeeded or (response_code >= 400 and response_code < 500):
+		for _i in range(mini(in_flight_event_count, pending_events.size())):
+			pending_events.pop_front()
+		if in_flight_event_count > 0:
+			_save_queue()
+	in_flight_event_count = 0
+
+	if succeeded:
 		return
 	# A 4xx means the server judged this payload malformed, and it will judge it malformed
 	# every time. Re-queuing it would retry it forever while pushing good data out of a
@@ -300,7 +369,9 @@ func _trim_queue() -> void:
 func _save_queue() -> void:
 	var file = FileAccess.open(QUEUE_FILE_PATH, FileAccess.WRITE)
 	if file:
-		file.store_string(JSON.stringify(queue))
+		# An object rather than a bare array, so events persist across restarts too. Older
+		# files hold a bare array; _load_queue still reads those.
+		file.store_string(JSON.stringify({"queue": queue, "events": pending_events}))
 		file.close()
 
 func _load_queue() -> void:
@@ -313,10 +384,17 @@ func _load_queue() -> void:
 	file.close()
 
 	var parsed = JSON.parse_string(content)
-	if not (parsed is Array):
+	# 0.6.0+ writes an object; earlier builds wrote a bare array of samples.
+	var raw_queue = parsed
+	if parsed is Dictionary:
+		raw_queue = parsed.get("queue", [])
+		var saved_events = parsed.get("events", [])
+		if saved_events is Array:
+			pending_events = saved_events
+	if not (raw_queue is Array):
 		return
 
-	for item in parsed:
+	for item in raw_queue:
 		if not (item is Dictionary):
 			continue
 		# Pre-0.5.0 queue files hold bare samples rather than session batches. Those samples

@@ -118,6 +118,40 @@ rows. The key with real write power now exists only in server-side environment v
   crash, by definition, never reaches the shutdown handler — so the accurate signal is the
   *absence* of one, which a dying client cannot falsify.
 
+### Gameplay correlation (0.6.0+)
+
+A frame-rate chart can only tell you that something got slower. It cannot tell you *where* in
+the game, or why. So each performance sample now carries the gameplay context it was taken in —
+height climbed, live platform count, total node count, lava speed — on the same row as the frame
+timings, which makes correlating them a plain column comparison rather than a join.
+
+Two views turn that into answers:
+
+- **`build_perf_by_height`** buckets samples into 500-unit height bands per build and reports
+  frame time beside average platform count. "Frame time doubles above 4000 and platform count
+  triples in the same band" is a bug report with a place to start; "FPS went down" is not.
+- **`death_distribution`** buckets deaths the same way. A death band that shifts between builds
+  is a difficulty change; one that lines up with a frame-time cliff is a performance problem
+  costing players runs.
+
+The integration is deliberately one-directional. The logger holds a single `Callable` and knows
+nothing about Ascent:
+
+```gdscript
+SystemLogger.register_context_provider(_telemetry_context)
+SystemLogger.log_event("death", Score.get_current_height(), {"cause": "lava"})
+```
+
+Everything game-specific lives in the game. A provider that throws, returns the wrong type, or
+touches a freed node degrades to "no context for this sample" — telemetry is a bolt-on, and it
+does not get to break the thing it is measuring. The real call sites are recorded in
+[`godot/examples/instrumentation.gd`](godot/examples/instrumentation.gd), since the game itself
+lives outside this repository.
+
+Event types are a closed set (`run_start`, `run_end`, `death`, `powerup`, `checkpoint`),
+enforced at the API and again as a Postgres check constraint. An open vocabulary would let a
+client invent names that no query knows about, which the dashboard would then silently ignore.
+
 ### Environment variables
 
 | Variable | Where | Purpose |
@@ -164,8 +198,8 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test          # 37 tests: metric maths, gate verdicts, ingest validation, API behaviour
-npm run test:godot # queue behaviour, run headlessly in a real Godot runtime
+npm test           # 45 tests: metric maths, gate verdicts, ingest validation, API behaviour
+npm run test:godot # 38 checks: queue, context provider and events, in a real Godot runtime
 ```
 
 That covers the metric maths, the gate's verdict logic, ingest validation, the API's status
