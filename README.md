@@ -225,6 +225,10 @@ deterministic in-browser dataset containing two builds, FPS drops, and a memory 
 4. Clicking a performance event focuses its point on the FPS chart.
 5. **Pause live**, **Resume live**, and **Refresh** update the connection state as expected.
 6. The P95 frame time tile reads **Measured over N frames**, not the pre-0.4.0 approximation.
+7. The **Performance by height** panel shows frame time (bars) and platform count (line) both
+   climbing above height 1500 — the correlation the panel exists to reveal. In live mode the
+   panel hides itself entirely until the 0.6.0 migration has been applied and a build has
+   reported gameplay context, without the dashboard claiming to be offline.
 
 Chart.js is checked into `vendor/` so the dashboard and demo remain testable when a CDN is
 unavailable. Production mode remains the default; the demo dataset is only enabled by the

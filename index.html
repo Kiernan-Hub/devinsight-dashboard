@@ -229,6 +229,8 @@
 
     .empty.visible { display: grid; }
 
+    .height-panel { margin-top: 18px; }
+
     footer { display: flex; justify-content: space-between; gap: 20px; margin-top: 20px; color: #59636c; font-size: 10px; }
     footer code { color: #737f89; }
 
@@ -325,6 +327,14 @@
       </aside>
     </section>
 
+    <section class="panel height-panel" id="heightPanel" hidden>
+      <div class="panel-head">
+        <h3 class="panel-title">Performance by height</h3>
+        <span class="panel-note" id="heightNote">FRAME TIME VS PLATFORM COUNT</span>
+      </div>
+      <div class="chart-wrap"><canvas id="heightChart"></canvas><div class="empty" id="heightEmpty">No gameplay context recorded yet</div></div>
+    </section>
+
     <footer><span>Telemetry from <code>Ascent</code> via Supabase</span><span>Performance budget: no more than 10% FPS regression</span></footer>
   </main>
 
@@ -338,6 +348,7 @@
     const $ = id => document.getElementById(id);
     let fpsChart;
     let memChart;
+    let heightChart;
     let refreshing = false;
     let paused = false;
     let rangeMinutes = 5;
@@ -399,8 +410,24 @@
           frames_sampled: Math.round(fps * 5)
         };
       });
+      // A deliberately legible correlation: platforms accumulate faster than culling removes
+      // them above 2000, and frame time follows. This is the shape the panel exists to reveal.
+      const byHeight = Array.from({ length: 9 }, (_, index) => {
+        const band = index * 500;
+        const platforms = 40 + Math.round(Math.pow(Math.max(0, band - 1500) / 500, 1.7) * 22);
+        return {
+          build_version: "0.4.0",
+          height_band: band,
+          sample_count: 60 - index * 3,
+          avg_frame_time_p95_ms: Number((8.5 + platforms * 0.12).toFixed(2)),
+          avg_platform_count: platforms,
+          max_platform_count: platforms + 12
+        };
+      });
+
       return {
         logs,
+        byHeight,
         builds: [
           { build_version: "0.4.0", avg_fps: 76.8, sample_count: 443 },
           { build_version: "0.3.0", avg_fps: 108.1, sample_count: 518 }
@@ -437,7 +464,8 @@
     async function fetchJson(path) {
       if (demoMode) {
         const data = demoData();
-        if (path.includes("build_fps_summary")) return data.builds;
+        if (path.includes("build_perf_by_height")) return data.byHeight;
+      if (path.includes("build_fps_summary")) return data.builds;
         const rows = selectedBuild === "all" ? data.logs : data.logs.filter(row => row.build_version === selectedBuild);
         return rows.slice().reverse(); // match the real query: newest first
       }
@@ -454,6 +482,67 @@
       $("currentFpsMeta").textContent = "Latest sample";
       $("p95Meta").textContent = "Awaiting frame timings";
       $("memoryMeta").textContent = "Latest sample";
+    }
+
+    // Some data is optional: build_perf_by_height only exists once the 0.6.0 migration has been
+    // applied, and only has rows once a build has reported gameplay context. A dashboard that
+    // showed "Offline" because an optional panel was missing would be lying about the rest.
+    async function fetchOptional(path) {
+      try {
+        return await fetchJson(path);
+      } catch {
+        return null;
+      }
+    }
+
+    function renderHeightChart(rows) {
+      const panel = $("heightPanel");
+      if (!rows) {
+        panel.hidden = true;
+        return;
+      }
+      panel.hidden = false;
+      $("heightEmpty").classList.toggle("visible", !rows.length);
+      if (!rows.length) {
+        $("heightNote").textContent = "AWAITING GAMEPLAY CONTEXT";
+        if (heightChart) { heightChart.data.labels = []; heightChart.data.datasets.forEach(d => d.data = []); heightChart.update(); }
+        return;
+      }
+
+      const labels = rows.map(row => `${Number(row.height_band).toLocaleString()}`);
+      const frameTime = rows.map(row => Number(row.avg_frame_time_p95_ms));
+      const platforms = rows.map(row => Number(row.avg_platform_count));
+      $("heightNote").textContent = `FRAME TIME VS PLATFORM COUNT / ${rows.length} BANDS`;
+
+      const config = {
+        labels,
+        datasets: [
+          {
+            type: "bar", label: "P95 frame time (ms)", data: frameTime, yAxisID: "y",
+            backgroundColor: "rgba(155, 225, 93, 0.35)", borderColor: chartColors.fps, borderWidth: 1
+          },
+          {
+            type: "line", label: "Avg platforms alive", data: platforms, yAxisID: "y1",
+            borderColor: chartColors.memory, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.25
+          }
+        ]
+      };
+
+      if (!heightChart) {
+        const options = chartOptions(0);
+        options.plugins.legend = { display: true, labels: { boxWidth: 10, font: { size: 10 } } };
+        options.scales.x.title = { display: true, text: "Height climbed", color: chartColors.ticks, font: { size: 10 } };
+        // Two axes because the whole point is the shape of one against the other: if frame time
+        // climbs in the same bands where platform count climbs, the cause is on the chart.
+        options.scales.y1 = {
+          position: "right", grid: { display: false },
+          ticks: { maxTicksLimit: 5, font: { size: 10 } }, border: { display: false }
+        };
+        heightChart = new Chart($("heightChart"), { type: "bar", data: config, options });
+      } else {
+        heightChart.data = config;
+        heightChart.update();
+      }
     }
 
     function renderMetrics(logs) {
@@ -659,9 +748,13 @@
       refreshing = true;
       setConnection("", "Updating");
       try {
-        const [newestFirst, builds] = await Promise.all([
+        const heightBuild = selectedBuild !== "all" ? selectedBuild : (manifest?.build_version ?? null);
+        const [newestFirst, builds, byHeight] = await Promise.all([
           fetchJson(logsPath(rangeMinutes, selectedBuild)),
-          fetchJson("/rest/v1/build_fps_summary?select=*&order=last_seen.desc")
+          fetchJson("/rest/v1/build_fps_summary?select=*&order=last_seen.desc"),
+          heightBuild
+            ? fetchOptional(`/rest/v1/build_perf_by_height?select=*&build_version=eq.${encodeURIComponent(heightBuild)}&order=height_band.asc`)
+            : Promise.resolve(null)
         ]);
         // The query asks for the newest rows first so a window bigger than the row limit
         // yields recent data; charts read left-to-right in time, so flip it back here.
@@ -672,6 +765,7 @@
         renderMetrics(logs);
         renderCharts(logs);
         renderEvents(logs);
+        renderHeightChart(byHeight);
         $("notice").className = "notice";
         if (truncated) {
           showNotice(`Showing the most recent ${LOG_QUERY_LIMIT.toLocaleString()} samples — this window holds more.`, "regression");
