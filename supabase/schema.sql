@@ -384,3 +384,43 @@ group by build_version, floor(height / 500);
 alter view public.death_distribution set (security_invoker = on);
 
 grant select on public.death_distribution to anon;
+
+-- ---------------------------------------------------------------------------
+-- Build stability
+--
+-- session_summary's `outcome` column falls out of data the client cannot fake on its way down
+-- (see that view's own comment): a session that stops reporting without ever announcing an
+-- ending is 'abandoned' or 'ended_unclean', not 'clean'. Rolling that up per build gives a
+-- crash/abandon rate — a sharper build-quality signal than average FPS, and one that costs
+-- nothing extra to collect. A build that plays smoothly but crashes on exit, or hangs and never
+-- reports again, looks perfectly healthy on every FPS chart; this is the metric that catches it.
+--
+-- 'active' sessions are excluded from the rate: a session still in progress hasn't concluded as
+-- anything yet, and folding it into either the numerator or the denominator would misrepresent
+-- a build's stability using data that isn't evidence of anything, exactly as session_summary's
+-- own CASE statement already treats it.
+-- ---------------------------------------------------------------------------
+
+drop view if exists public.build_session_health;
+create view public.build_session_health as
+select
+  build_version,
+  count(*)                                                            as total_sessions,
+  count(*) filter (where outcome = 'active')                          as active_sessions,
+  count(*) filter (where outcome = 'clean')                           as clean_sessions,
+  count(*) filter (where outcome = 'ended_unclean')                   as unclean_sessions,
+  count(*) filter (where outcome = 'abandoned')                       as abandoned_sessions,
+  count(*) filter (where outcome != 'active')                         as concluded_sessions,
+  round(
+    100.0 * count(*) filter (where outcome in ('ended_unclean', 'abandoned'))
+      / nullif(count(*) filter (where outcome != 'active'), 0),
+    1
+  )                                                                   as unhealthy_rate_pct,
+  round(avg(duration_seconds) filter (where outcome != 'active'), 1)  as avg_duration_seconds,
+  max(started_at)                                                     as last_session_started_at
+from public.session_summary
+group by build_version;
+
+alter view public.build_session_health set (security_invoker = on);
+
+grant select on public.build_session_health to anon;

@@ -192,6 +192,19 @@ Event types are a closed set (`run_start`, `run_end`, `death`, `powerup`, `check
 enforced at the API and again as a Postgres check constraint. An open vocabulary would let a
 client invent names that no query knows about, which the dashboard would then silently ignore.
 
+### Build stability
+
+FPS and frame time only measure a build while it's running. A build that plays smoothly but
+crashes on exit, or hangs and never reports again, looks perfectly healthy on every performance
+chart — nothing about a stutter-free session says anything about whether it *ended* well.
+
+`session_summary`'s `outcome` column closes that gap, built from data the client cannot fake on
+its way down: a session is `clean` only if it explicitly said so while shutting down, and one
+that simply stops reporting is `ended_unclean` or `abandoned` by default, never inferred as
+fine. `build_session_health` rolls that up per build into a crash/abandon rate, shown on the
+dashboard as **Build stability** — a sample count travels with the percentage, since 100%
+unhealthy out of one concluded session is a very different claim from 100% out of two hundred.
+
 ### Environment variables
 
 | Variable | Where | Purpose |
@@ -269,6 +282,10 @@ deterministic in-browser dataset containing two builds, FPS drops, and a memory 
    climbing above height 1500 — the correlation the panel exists to reveal. In live mode the
    panel hides itself entirely until the 0.6.0 migration has been applied and a build has
    reported gameplay context, without the dashboard claiming to be offline.
+8. The **Build stability** panel lists four builds: 0.4.0 and 0.2.0 read red (over 25%
+   unhealthy), 0.3.0 reads amber (8.2%), and 0.5.0 shows **—** with "no concluded sessions yet"
+   rather than a misleading 0%, since its one session is still active. This panel degrades the
+   same way as Performance by height — hidden, not an error, before the migration lands.
 
 Chart.js is checked into `vendor/` so the dashboard and demo remain testable when a CDN is
 unavailable. Production mode remains the default; the demo dataset is only enabled by the
