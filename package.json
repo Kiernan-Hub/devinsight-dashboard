@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Live performance telemetry pipeline for the Godot game Ascent.",
   "scripts": {
-    "test": "node --test scripts/ lib/",
+    "test": "node --test lib/*.test.mjs scripts/*.test.mjs",
     "test:godot": "godot --headless --path godot --script tests/test_logger_queue.gd && godot --headless --path godot --script tests/test_benchmark_model.gd",
     "check:regression": "node scripts/check-regression.mjs",
     "check:logger-sync": "node --test scripts/logger-sync.test.mjs",

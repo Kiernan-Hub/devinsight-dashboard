@@ -9,14 +9,24 @@ on:
 
 jobs:
   test:
-    name: Unit tests
+    name: Unit tests (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    # package.json declares engines.node ">=20", so the tests have to actually pass on more
+    # than one major. Pinning a single version hid a real break: `node --test scripts/ lib/`
+    # (directory arguments) works on Node 20 but Node 22 resolves those paths as modules and
+    # dies with MODULE_NOT_FOUND before running a single test. CI was green the whole time
+    # because it only ever ran Node 20. Testing the range we claim to support is what catches
+    # that class of bug.
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
 
       # These cover the calculations behind every number the dashboard and the gate report.
       # They previously existed but nothing ran them.
