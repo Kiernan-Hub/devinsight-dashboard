@@ -15,8 +15,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
 
-// 256 KB. MAX_SAMPLES_PER_REQUEST already bounds the row count; this bounds the bytes, so a
-// single enormous string field cannot be used to burn function memory.
+// 256 KB. MAX_SAMPLES_PER_REQUEST already bounds the row count; this bounds the bytes, so an
+// oversized payload is turned away before it costs us any further work or reaches the
+// database. See the check itself for what this does and does not actually protect against.
 const MAX_BODY_BYTES = 256 * 1024;
 
 function send(res, status, payload) {
@@ -54,18 +55,47 @@ export default async function handler(req, res) {
     return send(res, 500, { error: "Ingest is not configured" });
   }
 
+  // Fail closed. This used to read `if (INGEST_TOKEN) { ...check... }`, which silently
+  // skipped authentication entirely whenever the variable was unset — turning the endpoint
+  // into an unauthenticated writer backed by the service-role key, which is the exact hole
+  // Phase 1 was built to close. A missing token is a misconfiguration, and the safe reading
+  // of a misconfigured door is "shut", not "open". This matters most during a token
+  // rotation, where there is otherwise a window between deleting the old value and setting
+  // the new one in which anyone could write telemetry.
+  if (!INGEST_TOKEN) {
+    console.error("ingest: INGEST_TOKEN is not configured; refusing to accept telemetry");
+    return send(res, 503, { error: "Ingest is not configured" });
+  }
+
   // Constant-time-ish comparison is overkill for a token that ships in a game binary; the
   // point of the check is to keep casual traffic and stray crawlers out of the table, not to
   // withstand a timing attack from someone who can already read the token.
-  if (INGEST_TOKEN) {
+  {
     const provided = req.headers["x-ingest-token"];
     if (provided !== INGEST_TOKEN) {
       return send(res, 401, { error: "Invalid or missing ingest token" });
     }
   }
 
+  // Size check on the declared Content-Length, not just on the raw string. The previous
+  // version only measured `req.body` when it arrived as a string — but Vercel's Node runtime
+  // parses an `application/json` request into an object before the handler ever runs, so on
+  // the deployed path `typeof body === "string"` is false and the byte limit never applied to
+  // a single real request. Reading the header covers both shapes.
+  //
+  // Honest about what this does and does not buy: the runtime has already parsed the body by
+  // the time we get here, so this cannot prevent the parse itself from allocating. What it
+  // does is reject an oversized payload before we spend further work on it and before it can
+  // reach the database. The real bounds on memory are the platform's own request-size limit
+  // upstream and the per-field limits in ingest-core.mjs.
+  const declaredLength = Number(req.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+    return send(res, 413, { error: "Request body too large" });
+  }
+
   let body = req.body;
   if (typeof body === "string") {
+    // Chunked requests arrive without a Content-Length, so the string path still measures.
     if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
       return send(res, 413, { error: "Request body too large" });
     }
