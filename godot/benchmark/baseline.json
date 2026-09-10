@@ -1,0 +1,14 @@
+{
+  "avg_fps": 1279.84,
+  "duration_wall_seconds": 29.955,
+  "expected_ticks": 1800,
+  "final_height": 4320,
+  "frames_sampled": 1800,
+  "godot_version": "4.7-stable (official)",
+  "max_frame_time_ms": 1.763,
+  "max_obstacle_count": 324,
+  "p95_frame_time_ms": 1.217,
+  "schema_version": 2,
+  "ticks": 1800,
+  "timed_out": false
+}

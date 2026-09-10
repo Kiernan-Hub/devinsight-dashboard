@@ -2,8 +2,9 @@
 
 Live performance telemetry pipeline for my Godot game, **Ascent**. Every 5 seconds the running
 game reports FPS and memory usage to a Postgres backend, which a live dashboard charts in real
-time — and a CI gate fails the build if it regresses performance by more than 10% against the
-baseline that commit declares.
+time. Two independent CI gates watch for regressions: one reads real player telemetry for the
+build a commit declares, the other runs a deterministic headless benchmark on every single push
+and PR so a regression signal exists even before any human has played the build.
 
 **Pipeline:** Godot (`godot/system_logger.gd`) → `POST /api/ingest` (Vercel Function) → Supabase
 (Postgres) → `index.html` dashboard (Chart.js) → GitHub Actions performance gate on every push.
@@ -70,13 +71,52 @@ builds. That anchoring is the whole point:
 
 A regression over 10% fails the check; a dip over 5% warns.
 
+## The headless benchmark gate
+
+`check-regression.mjs` (above) has a structural limitation: it can only judge a build once a
+human has played it enough to produce real telemetry. Until then it correctly reports
+`PENDING` rather than a false pass — but that also means a regression introduced in a commit
+sits unjudged until someone happens to play that exact build.
+
+`.github/workflows/benchmark-gate.yml` closes that gap by generating its own performance signal
+for the current commit, on every push and every pull request, with no human required:
+
+1. `godot/benchmark/benchmark_scene.gd` runs headless — a fixed-seed, original workload (an
+   obstacle-density climber, structurally similar to a procedural platformer's spawn-ahead /
+   cull-behind pattern) — and measures the real wall-clock cost of one simulated tick's work,
+   1800 times.
+2. `scripts/run-benchmark.mjs` runs that three times and keeps the **minimum** P95 tick time
+   across trials, not a single sample. Measured empirically: a single trial's P95 swung by
+   dozens of percent run-to-run from OS scheduling noise alone. Taking the minimum across
+   repeated trials is standard practice for exactly this reason — scheduling noise can only
+   ever *add* delay on top of the real cost, never subtract from it, so the minimum is the
+   least noise-contaminated estimate of what the code actually costs.
+3. That number is compared against [`godot/benchmark/baseline.json`](godot/benchmark/baseline.json),
+   a deliberately-committed golden file (`npm run benchmark:update-baseline` regenerates it; the
+   gate itself never touches it) — a regression over 30% fails the check, a dip over 15% warns.
+
+**What this does and does not prove.** The workload is original code, not a copy of Ascent's
+real level generator — the actual game lives outside this repository by design (see
+`CLAUDE.md`), so nothing proprietary needs to become public for CI to measure something real.
+That means this gate catches a regression in *this benchmark's own logic* or in Godot/the CI
+runner itself — not a regression in Ascent's actual level generation, player physics, or
+rendering, none of which exist in this checkout. It also runs headless, so it measures CPU-side
+cost only; a purely GPU-bound regression (too many draw calls, an expensive shader) would not
+show up here, or in any headless benchmark of the real game either. Both limits are stated
+outright in the benchmark script's own header, not left for a reader to discover.
+
+```sh
+npm run benchmark                  # run 3 trials, compare against the committed baseline
+npm run benchmark:update-baseline  # run 3 trials, OVERWRITE the baseline — review before committing
+```
+
 ## Stack
 
 - **Godot** — game client, posts telemetry via `HTTPRequest`
 - **Vercel Functions** — `api/ingest.js`, the only write path into the database
 - **Supabase** — Postgres, RLS-locked anon key (**read-only**)
 - **Vercel** — static dashboard hosting
-- **GitHub Actions** — unit tests + CI performance regression gate
+- **GitHub Actions** — unit tests, the real-telemetry regression gate, and the headless benchmark gate
 
 ## The ingest API
 
@@ -198,8 +238,8 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 45 tests: metric maths, gate verdicts, ingest validation, API behaviour
-npm run test:godot # 38 checks: queue, context provider and events, in a real Godot runtime
+npm test           # 57 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic
+npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
 ```
 
 That covers the metric maths, the gate's verdict logic, ingest validation, the API's status

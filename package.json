@@ -6,10 +6,12 @@
   "description": "Live performance telemetry pipeline for the Godot game Ascent.",
   "scripts": {
     "test": "node --test scripts/ lib/",
-    "test:godot": "godot --headless --path godot --script tests/test_logger_queue.gd",
+    "test:godot": "godot --headless --path godot --script tests/test_logger_queue.gd && godot --headless --path godot --script tests/test_benchmark_model.gd",
     "check:regression": "node scripts/check-regression.mjs",
     "check:logger-sync": "node --test scripts/logger-sync.test.mjs",
-    "serve": "python3 -m http.server 8000"
+    "serve": "python3 -m http.server 8000",
+    "benchmark": "node scripts/run-benchmark.mjs",
+    "benchmark:update-baseline": "node scripts/run-benchmark.mjs --update-baseline"
   },
   "engines": {
     "node": ">=20"

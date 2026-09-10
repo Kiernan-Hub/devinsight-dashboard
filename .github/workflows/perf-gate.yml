@@ -23,6 +23,31 @@ jobs:
       - name: Run tests
         run: npm test
 
+  godot-tests:
+    name: Godot unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same pinned download as benchmark-gate.yml. Kept duplicated rather than factored into a
+      # shared setup because these are two independently useful, independently readable
+      # workflows — a reviewer can open either one and see everything it does.
+      - name: Download Godot (headless-capable)
+        env:
+          GODOT_VERSION: "4.7"
+        run: |
+          curl -fsSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+
+      # Covers the offline queue (batching, trimming, the flush/enqueue race) and the
+      # benchmark's own pure decision logic. ascent/ isn't in this checkout, so the
+      # logger-sync half of npm test skips here and only guards locally.
+      - name: Run Godot tests
+        run: npm run test:godot
+
   check-regression:
     name: FPS regression gate
     needs: test

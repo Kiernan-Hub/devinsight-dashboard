@@ -1,0 +1,39 @@
+name: Headless Benchmark Gate
+
+# Unlike perf-gate.yml (which reads real player telemetry and reports "pending" until a human
+# has actually played the build), this gate generates its own performance signal for the
+# current commit, on every push and every pull request — no human playtesting required. See
+# godot/benchmark/benchmark_scene.gd for exactly what it does and does not measure.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # Pin explicitly and bump deliberately alongside any local Godot upgrade — an unpinned
+  # "latest" would make a CI failure impossible to reproduce locally.
+  GODOT_VERSION: "4.7"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download Godot (headless-capable)
+        run: |
+          curl -fsSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip
+          chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
+          sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
+
+      - name: Run headless benchmark and compare against the committed baseline
+        run: npm run benchmark
