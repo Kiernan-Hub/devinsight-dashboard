@@ -210,6 +210,16 @@ on what the user actually asks for next:
 3. Roadmap items mentioned but not started: a session explorer (drill into individual
    sessions), regression alerts (notify on a real gate failure rather than requiring someone to
    check the dashboard), possibly wiring `benchmark-gate.yml`'s result onto a PR comment.
+3a. **Give the perf gate a noise model.** Right now `verdictFor` (`scripts/dashboard-core.mjs`)
+    treats a single build's `avg_fps` as exact and thresholds a flat 10%/5% change against one
+    fixed baseline — no notion of how much that average naturally varies run-to-run. Idea: use
+    the spread across repeated samples/runs of the same build (stddev or a confidence interval)
+    to decide whether an observed drop is a real regression or ordinary measurement noise,
+    instead of a flat percentage cutoff. Also underused: `build_fps_summary` already exposes
+    `fps_1pct_low` and `avg_frame_time_p95_ms`, but the gate only judges on the mean — a build
+    with a noisy tail (stutters) can look identical to a smooth one today. Came out of prepping
+    for the Elbaum meeting (regression-test-selection research) — see if richer continuous
+    history (magnitude/trend/variance) beats a binary threshold at the same false-positive rate.
 4. A fresh, skeptical audit pass across all 4 phases together, now that they're settled — the
    kind of review that catches integration issues invisible when each phase was reviewed in
    isolation.
