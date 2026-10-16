@@ -27,5 +27,19 @@
         "preset": "recommended"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "loadtest/**"
+      ],
+      "javascript": {
+        "globals": [
+          "__ENV",
+          "__VU",
+          "__ITER"
+        ]
+      }
+    }
+  ]
 }
