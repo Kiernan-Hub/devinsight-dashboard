@@ -5,7 +5,66 @@ a new Claude session picking this up: read this whole file before touching anyth
 replaces re-deriving context from git log/diffing — that's slower and less reliable than what's
 written here.
 
-## Where things stand right now
+## Update 2026-10-16 — expansion phases 1–2 (read this first; the rest is the September history)
+
+Work since September lives on branch **`expansion/docker-and-ci`** — four commits on top of
+`5576fde`, **not pushed, no PR yet** (pushing is the user's call). The plan being followed is in
+`INTERNSHIP_EXPANSION.md` (untracked on purpose: it has personal context). Kubernetes was
+considered and rejected by the user; Tier 3 items (Prometheus, queues, etc.) are deliberately later.
+
+**Landed, verified locally:**
+- **Phase 1 — Docker** (`5777b96`). `docker compose up --build --wait` runs the whole pipeline
+  with no accounts: Postgres from `supabase/schema.sql` + a Supabase-roles shim, PostgREST, the
+  ingest handler via `server.mjs` (adapter in `lib/node-server.mjs`; `api/ingest.js` unchanged),
+  nginx gateway on 127.0.0.1:8080 with production's URL layout. `npm run smoke` is the end-to-end
+  check. Local keys are generated at first boot (`scripts/local-keys.mjs`), never committed.
+  Verified from a fresh checkout (git worktree) on a second port, then torn down.
+- **Schema fixes** (`f141f8b`) — both found by the local stack, both affect the live DB:
+  `schema.sql` failed on every re-run after the first (view dependency; now drops
+  `build_session_health` before `session_summary`), and anon held TRUNCATE/TRIGGER/REFERENCES
+  (not reachable via PostgREST, but now revoked: "Public read surface" block at the end of the
+  file). `supabase/tests/privileges.sql` asserts the invariants; safe to run in the SQL editor.
+- **Phase 2 — CI/CD** (`e0042a7`). New `docker.yml` (compose smoke + privileges + schema
+  idempotency; GHCR publish on main), `lint.yml` (Biome, actionlint, hadolint via pinned images),
+  `codeql.yml` (JS + actions), `.github/dependabot.yml`. All workflows SHA-pinned, least
+  privilege, Node 24. **Only verified by simulating the step scripts locally** — has never run on
+  GitHub's runners. First push will be the real test.
+
+**New blocker, more urgent than the old one:** the live Supabase project's hostname
+(`savgtraqvbqkbblhhhxe.supabase.co`) returns **NXDOMAIN** as of 2026-10-16. Most likely paused by
+Supabase's free-tier 7-day-inactivity rule (no traffic since ~2026-09-10). The deployed Vercel
+dashboard shows Offline, and **the FPS regression gate in `perf-gate.yml` will fail on the next
+push** (it exits 1 when Supabase is unreachable — correct behaviour, not a bug). The user must
+restore the project from the Supabase dashboard; Supabase's docs say paused projects can be
+restored for 90 days (some versions say longer — treat mid-December 2026 as the deadline). After
+restoring: run `schema.sql` (now includes the two fixes above), then `supabase/tests/privileges.sql`.
+
+**Still open from September:** ingest token rotation (it's in git history), the two leftover test
+sessions, and the GitHub settings in README's "CI/CD and supply-chain security" section (secret
+scanning + push protection, ruleset requiring checks on main, GHCR package visibility).
+
+**Local environment changes made this session:** Docker runs via **Colima** (not Docker Desktop),
+installed with `brew install colima docker docker-compose docker-buildx`. After a reboot,
+`colima start` before any `docker` command. `~/.docker/config.json` got `cliPluginsExtraDirs`
+(Homebrew's documented step) so `docker compose` / `docker buildx` resolve. **Colima only mounts
+`$HOME`** — bind mounts from `/tmp` or the scratchpad silently become empty directories.
+
+**Gotchas hit this session (don't rediscover them):**
+- Single-file bind mounts pin an inode; editors replace files on save → nginx served a deleted
+  file. The gateway now mounts the repo directory and serves an allowlist.
+- Node's test runner runs any `*-test.mjs` as a test. The smoke script is `smoke.mjs` for that
+  reason. If `npm test` reports more tests than expected, check file names.
+- GitHub Actions' default shell has no `pipefail`; workflows that pipe set `shell: bash`.
+- `biome migrate` turned rule groups *off*. Check `biome.json` by planting a bug, not by trusting
+  the migration.
+- In zsh, `path` is tied to `PATH` — never use it as a loop variable.
+
+**Next, in order:** (1) user restores Supabase; (2) with the user's OK, push the branch and open a
+PR so the new checks run for real — expect the FPS gate to be red until (1); (3) Phase 3
+(Terraform + AWS Lambda), which needs an AWS account on the **Free plan** (can't be charged;
+account closes after 6 months) and the user's explicit yes before any `terraform apply`.
+
+## Where things stand right now (as of 2026-09-10)
 
 `main` is clean, all four planned phases are merged and pushed, and both CI workflows are
 confirmed green on the latest commit (`ce12d26`) — verified via GitHub's public REST API, not
@@ -168,7 +227,13 @@ again, that boundary was a deliberate choice, not an oversight.
   this). Null-rate path exercised for real via a genuine demo-mode 4th build. Missing-view
   degradation re-verified live (same pattern as Phase 2's height panel).
 
-## Test inventory (all passing as of `ce12d26`)
+## Test inventory
+
+As of 2026-10-16 (`e0042a7`): `npm test` is **72** Node tests (adds the Docker adapter and key
+generator); `npm run test:godot` unchanged at 52; with the stack up, `npm run smoke` (12 checks)
+and `npm run test:db` (privilege/RLS invariants). The September inventory follows.
+
+### As of `ce12d26`
 
 ```
 npm test            # 57 Node tests: scripts/*.test.mjs + lib/*.test.mjs
