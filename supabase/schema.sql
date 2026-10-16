@@ -252,12 +252,8 @@ create policy "anon can read events"
   on public.gameplay_events for select to anon
   using (true);
 
-revoke insert, update, delete on public.system_logs     from anon;
-revoke insert, update, delete on public.sessions        from anon;
-revoke insert, update, delete on public.gameplay_events from anon;
-grant select on public.system_logs     to anon;
-grant select on public.sessions        to anon;
-grant select on public.gameplay_events to anon;
+-- The table-level grants that go with these policies (anon: SELECT, nothing else) are set in
+-- one place, at the very end of this file — see "Public read surface".
 
 -- ---------------------------------------------------------------------------
 -- Aggregate view — read by the dashboard and by scripts/check-regression.mjs
@@ -287,8 +283,6 @@ group by build_version;
 -- policies above. security_invoker makes the view respect the caller's own permissions.
 alter view public.build_fps_summary set (security_invoker = on);
 
-grant select on public.build_fps_summary to anon;
-
 -- Per-session rollup. `outcome` is the interesting column: a session that stopped reporting
 -- without ever announcing an ending is one the player did not close normally. A crash rate per
 -- build is a far sharper quality signal than an average frame rate, and it costs nothing extra
@@ -296,6 +290,14 @@ grant select on public.build_fps_summary to anon;
 --
 -- Dropped and recreated for the same reason as build_fps_summary above: this view is new, but
 -- being consistent here means a future column reorder won't hit the same wall.
+--
+-- build_session_health (further down) is built on top of this view, and Postgres refuses to drop
+-- a view that another view depends on. So the dependent goes first; it is recreated below.
+-- Without this line the file applied cleanly exactly once, then failed on every re-run after —
+-- found by applying it twice in a row to the local Docker database, which CI now does on every
+-- push. (`drop ... cascade` would also work, but would silently take with it any view built on
+-- this one outside this file, too.)
+drop view if exists public.build_session_health;
 drop view if exists public.session_summary;
 create view public.session_summary as
 select
@@ -332,8 +334,6 @@ group by s.id;
 
 alter view public.session_summary set (security_invoker = on);
 
-grant select on public.session_summary to anon;
-
 -- ---------------------------------------------------------------------------
 -- Performance against progress
 --
@@ -366,8 +366,6 @@ group by build_version, floor(height / 500);
 
 alter view public.build_perf_by_height set (security_invoker = on);
 
-grant select on public.build_perf_by_height to anon;
-
 -- Where runs actually end, per build. A death band that shifts between builds is a difficulty
 -- change; one that coincides with a frame-time cliff in build_perf_by_height is a performance
 -- problem that is costing players runs.
@@ -382,8 +380,6 @@ where event_type = 'death' and height is not null
 group by build_version, floor(height / 500);
 
 alter view public.death_distribution set (security_invoker = on);
-
-grant select on public.death_distribution to anon;
 
 -- ---------------------------------------------------------------------------
 -- Build stability
@@ -423,4 +419,40 @@ group by build_version;
 
 alter view public.build_session_health set (security_invoker = on);
 
-grant select on public.build_session_health to anon;
+-- ---------------------------------------------------------------------------
+-- Public read surface
+--
+-- Everything the public anon key may do, in one list: read these eight relations. Nothing else.
+--
+-- Supabase starts from the opposite end. Every table and view created in `public` initially
+-- grants ALL privileges to its API roles, and is meant to be narrowed afterwards. This file used
+-- to narrow it by revoking insert, update and delete only — which left anon holding TRUNCATE
+-- (empties a whole table, and row-level security does not apply to it), TRIGGER and REFERENCES.
+-- None of those can be issued through Supabase's REST API, so this was never an open hole; but
+-- "safe because the only door has no handle for it" is one platform feature away from unsafe.
+-- It was found by applying this file to a local replica of Supabase's default grants
+-- (docker/db/00-supabase-roles.sql) and listing what anon actually held.
+--
+-- So: revoke everything, then grant back exactly what the dashboard reads. The objects are
+-- named rather than swept up with `all tables in schema public`, so running this file can never
+-- change permissions on anything it did not create. supabase/tests/privileges.sql, run in CI,
+-- fails the build if anon ever holds more than SELECT on anything in `public` — including a
+-- future view that someone forgets to add here.
+--
+-- `authenticated` (Supabase's signed-in-user role) gets nothing. This project has no user
+-- accounts, and a role that is never meant to be used should hold nothing in case it ever is.
+-- ---------------------------------------------------------------------------
+
+revoke all on
+  public.system_logs, public.sessions, public.gameplay_events,
+  public.build_fps_summary, public.session_summary, public.build_perf_by_height,
+  public.death_distribution, public.build_session_health
+from anon, authenticated;
+
+revoke all on sequence public.system_logs_id_seq, public.gameplay_events_id_seq from anon, authenticated;
+
+grant select on
+  public.system_logs, public.sessions, public.gameplay_events,
+  public.build_fps_summary, public.session_summary, public.build_perf_by_height,
+  public.death_distribution, public.build_session_health
+to anon;

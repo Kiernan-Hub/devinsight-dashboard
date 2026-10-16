@@ -250,6 +250,22 @@ are revoked. Writes go through `/api/ingest` with the service-role key. Constrai
 how *absurd* a forged row was; they could never stop a plausible one. Removing the write grant is
 what actually closes the hole.
 
+**"Read-only" is now checked, not asserted.** Supabase starts every new table and view by
+granting its API roles *all* privileges, and expects you to narrow them. The schema used to revoke
+`insert`, `update` and `delete` — and running it against a local replica of Supabase's defaults
+(see Docker, below) showed anon still held `TRUNCATE`, `TRIGGER` and `REFERENCES`. None of those
+are reachable through Supabase's REST API, so it was never an open hole, but it was one platform
+feature away from being one. The schema now revokes everything and grants back `SELECT` on an
+explicit list, and [`supabase/tests/privileges.sql`](supabase/tests/privileges.sql) fails if anon
+ever holds more than `SELECT` on anything in `public`, if signed-in users hold anything at all, or
+if any table has row-level security switched off. It only reads the catalog, so it is safe to
+paste into the Supabase SQL editor to audit production directly.
+
+**"Idempotent" is now checked too.** Applying the schema twice in a row against the local
+database showed it was not: `build_session_health` depends on `session_summary`, and Postgres
+refuses to drop a view another view depends on, so the file applied cleanly once and failed on
+every re-run after. Fixed by dropping the dependent first.
+
 ## Run the whole pipeline locally (Docker)
 
 Everything above, on one machine, with no Supabase or Vercel account:
@@ -278,7 +294,8 @@ Design decisions worth defending:
 - **The production schema applies unmodified.** Plain Postgres lacks Supabase's roles, so
   [`docker/db/00-supabase-roles.sql`](docker/db/00-supabase-roles.sql) recreates them first —
   including Supabase's permissive default grants, deliberately. A shim that granted *less* than
-  Supabase would make the schema's revokes look like they work when they might not.
+  Supabase would make the schema's revokes look like they work when they might not. That
+  faithfulness is what surfaced both schema bugs described under [Database](#database).
 - **Same URLs as production.** The gateway serves `/api/ingest` like Vercel and `/rest/v1/` like
   Supabase, so `api/ingest.js` and the dashboard need no local-mode code paths. The dashboard reads
   its data source from [`config.js`](config.js); the gateway serves a local version at that same
@@ -298,6 +315,7 @@ Design decisions worth defending:
 
 ```sh
 npm test               # also covers the adapter and key generator (no Docker needed)
+npm run test:db        # privilege + RLS invariants, against the running local database
 npm run db:migrate:local  # re-apply schema.sql to the running database (it is idempotent)
 ```
 

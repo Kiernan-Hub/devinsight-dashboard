@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node --test scripts/ lib/",
     "test:godot": "godot --headless --path godot --script tests/test_logger_queue.gd && godot --headless --path godot --script tests/test_benchmark_model.gd",
+    "test:db": "docker compose exec -T db psql -U postgres -v ON_ERROR_STOP=1 -q < supabase/tests/privileges.sql",
     "check:regression": "node scripts/check-regression.mjs",
     "check:logger-sync": "node --test scripts/logger-sync.test.mjs",
     "serve": "python3 -m http.server 8000",
