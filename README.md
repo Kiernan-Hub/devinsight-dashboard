@@ -125,13 +125,17 @@ npm run benchmark:update-baseline  # run 3 trials, OVERWRITE the baseline — re
 
 ```json
 {
-  "session": { "id": "<uuid v4>", "build_version": "0.5.0", "platform": "macOS" },
+  "session": { "id": "<uuid v4>", "build_version": "0.7.0", "platform": "macOS" },
+  "sent_at": "2026-10-16T12:00:05.120Z",
   "samples": [
-    { "fps_rate": 60, "memory_used_mb": 92.4, "frame_time_p95_ms": 18.2,
-      "frame_time_max_ms": 51.0, "frames_sampled": 300, "created_at": "2026-09-09T12:00:00Z" }
+    { "seq": 41, "created_at": "2026-10-16T12:00:00.004Z", "fps_rate": 60, "memory_used_mb": 92.4,
+      "frame_time_p95_ms": 18.2, "frame_time_max_ms": 51.0, "frames_sampled": 300 }
   ]
 }
 ```
+
+The response reports `accepted`, `rejected` (with reasons), `duplicates` (already stored by an
+earlier attempt) and `clock_offset_ms` (how far the client's clock is from the server's).
 
 **Why it exists.** The game used to write to Supabase directly with the anon key — a key that
 ships inside the game binary *and* inside the dashboard's JavaScript. "Anyone who has opened the
@@ -158,6 +162,37 @@ rows. The key with real write power now exists only in server-side environment v
   way out, and the server records a session that simply stops reporting as `abandoned`. A
   crash, by definition, never reaches the shutdown handler — so the accurate signal is the
   *absence* of one, which a dying client cannot falsify.
+
+### Delivery guarantees (0.7.0+)
+
+A network cannot promise "once". When a request times out after the database has already
+committed it, the client cannot tell that from a request that never arrived, so it re-sends — and
+before 0.7.0 every sample in that batch was stored twice, quietly inflating the averages the CI
+gate reads. Three changes, each closing a specific gap:
+
+- **All or nothing.** The ingest function used to make three separate database calls (session,
+  samples, events). If the third failed, the first two stayed committed, the client got a 5xx and
+  retried everything. Now one call to `ingest_batch()`, a Postgres function, does all three in
+  one transaction.
+- **Exactly once.** The game numbers every sample and event per session (`seq` 0, 1, 2, ...), and
+  `(session_id, seq)` is unique, so a retry of something already stored is skipped and reported
+  as a duplicate. The same numbers make loss visible: a session whose highest `seq` is 41 but
+  which has 39 rows lost three samples on the way, shown as `samples_lost` in `session_summary`
+  and in the session explorer. Older clients send no `seq`; their rows are unaffected.
+- **Correct times without trusting the player's clock.** Before 0.7.0 the game sent no sample
+  timestamps at all, so the server stamped arrival time — and the offline queue, whose whole job
+  is to preserve data through an outage, flushed every queued sample onto a single instant. Now
+  each sample carries `created_at` from when it was taken, and each request carries `sent_at`
+  from the same clock. The server dates a sample as *its own* now minus the gap between the two,
+  so a player whose clock is hours wrong still gets correct timestamps (instead of having every
+  sample rejected as "in the future").
+
+Measured with a load test ([`loadtest/RESULTS.md`](loadtest/RESULTS.md)): at 400 requests/second
+(~2,000 concurrent players) on a 2-CPU VM, the three-call version fell behind in two of three runs
+(p95 131 ms and 508 ms, hundreds of requests dropped); the one-call version held p95 ≤ 7.3 ms with
+nothing dropped in all three, and stored zero duplicate rows. The first single before/after pair
+had suggested a 25× speed-up; repeated, alternated runs showed that was noise, and the write-up
+says so.
 
 ### Gameplay correlation (0.6.0+)
 
@@ -335,6 +370,7 @@ npm test               # also covers the adapter and key generator (no Docker ne
 npm run test:db        # privilege + RLS invariants, against the running local database
 npm run db:migrate:local  # re-apply schema.sql to the running database (it is idempotent)
 npm run check:regression:local  # the real CI gate, against the local database (try it after seeding)
+npm run loadtest       # k6 against /api/ingest, 50 → 400 req/s; prints a per-level table
 ```
 
 **Monitoring the pipeline itself.** A telemetry pipeline that cannot report on itself has a
@@ -360,7 +396,7 @@ never created and API password auth is off.
 **Demo data.** [`scripts/seed.mjs`](scripts/seed.mjs) replays about three hours of play across
 three builds through the real `/api/ingest`, telling the story the dashboard exists to catch: the
 current build stops culling platforms past height 1500, so frame time climbs with height, average
-FPS falls 18% below the baseline, and half its sessions end badly. Every panel has something to
+FPS falls about 25% below the baseline, and half its sessions end badly. Every panel has something to
 show; pick the 24h range. It is deterministic, its requests are checked against the real ingest
 validation in `npm test`, and re-running replaces the previous seed rather than adding to it. One
 honest wrinkle: the API stamps session start and end times with the server's clock, on purpose,
@@ -380,7 +416,7 @@ Five workflows run on every push and pull request to `main`:
 |---|---|
 | [`perf-gate.yml`](.github/workflows/perf-gate.yml) | Unit tests (Node + Godot), and the real-telemetry FPS regression gate; on `main`, opens and closes alert issues (below) |
 | [`benchmark-gate.yml`](.github/workflows/benchmark-gate.yml) | The headless benchmark has not regressed against the committed baseline; the numbers are posted on the pull request as one comment, edited on each push |
-| [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself; the FPS gate, run against seeded data with a deliberate 18% regression, catches it. On `main`, publishes the image that just passed |
+| [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself; the FPS gate, run against seeded data with a deliberate ~25% regression, catches it. On `main`, publishes the image that just passed |
 | [`lint.yml`](.github/workflows/lint.yml) | Biome (JavaScript correctness), actionlint (the workflows themselves), hadolint (the Dockerfile) |
 | [`codeql.yml`](.github/workflows/codeql.yml) | GitHub's security analysis over the JavaScript *and* the workflows (also weekly) |
 
@@ -449,8 +485,8 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 102 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed, alerting and metrics format
-npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
+npm test           # 115 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed, alerting and metrics format
+npm run test:godot # 60 checks: queue, context provider, events, sample numbering, and the benchmark's pure decision logic
 ```
 
 That covers the metric maths, the gate's verdict logic, ingest validation, the API's status
@@ -459,7 +495,7 @@ stamps, and that `godot/system_logger.gd` still matches `ascent/Scenes/system_lo
 copy the game actually runs. `ascent/` is gitignored (the game lives outside this repo on
 purpose), so that second check skips in CI and guards the copies locally, where they can drift.
 
-`npm run test:godot` runs the offline queue's own tests inside a real Godot runtime, against a
+`npm run test:godot` runs the offline queue's own tests inside a real Godot runtime (through [`scripts/run-godot-tests.mjs`](scripts/run-godot-tests.mjs), because Godot exits 0 even when a test file fails to parse and runs nothing — the runner requires each suite's own PASS line), against a
 minimal harness project in `godot/`. The queue is the only part of the client with real state —
 it batches by session, survives restarts through a JSON file, caps its own size, and must never
 discard rows the server has not confirmed — and every bug found in it so far has been silent,

@@ -190,7 +190,7 @@ test("session ids from the URL are refused unless they are exactly a UUID", () =
 
 test("session queries are scoped to one session and ask for time order", () => {
   const { summary, samples, events } = sessionDetailPaths(SESSION.toUpperCase());
-  assert.match(summary, new RegExp(`/session_summary\\?.*&id=eq\\.${SESSION}$`));
+  assert.match(summary, new RegExp(`/session_summary\\?select=\\*&id=eq\\.${SESSION}$`));
   assert.match(samples, new RegExp(`session_id=eq\\.${SESSION}&order=created_at\\.asc`));
   assert.match(events, /^\/rest\/v1\/gameplay_events\?/);
   assert.match(sessionListPath("0.6.0 beta"), /build_version=eq\.0\.6\.0%20beta&order=started_at\.desc&limit=20$/);

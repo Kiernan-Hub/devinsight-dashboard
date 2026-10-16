@@ -27,6 +27,7 @@ func _initialize() -> void:
 	_run("legacy flat queue files keep their original build version", func(): return _test_legacy_migration())
 	_run("the context provider decorates each sample", func(): return _test_context_provider())
 	_run("events queue, cap, and survive a restart", func(): return _test_events())
+	_run("samples and events are numbered and timestamped when taken", func(): return _test_numbering())
 
 	print("")
 	if failures == 0:
@@ -241,6 +242,46 @@ func _test_events() -> bool:
 		"events should persist across a restart: saved %d, loaded %d"
 			% [logger.pending_events.size(), fresh.pending_events.size()])
 	_check(fresh.queue.size() > 0, "the sample backlog should still load from the new file format")
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(logger.QUEUE_FILE_PATH))
+	logger.free()
+	fresh.free()
+	return true
+
+# 0.7.0: the server stores each (session, seq) once and dates samples by created_at relative to
+# the request's sent_at, so both must be present, well-formed, and survive the offline queue.
+func _test_numbering() -> bool:
+	var iso = RegEx.new()
+	iso.compile("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$")
+	var stamper = LoggerScript.new()
+	var stamp = stamper._now_iso()
+	stamper.free()
+	_check(iso.search(stamp) != null, "'%s' is not UTC ISO-8601 with milliseconds" % stamp)
+
+	# Taken one after another, then queued as the offline path would queue them.
+	var logger = _new_logger()
+	for _i in 3:
+		logger._enqueue(logger._take_sample())
+	var samples = logger.queue[0]["samples"]
+	_check(samples.size() == 3, "three ticks should queue three samples, got %d" % samples.size())
+	_check(samples[0]["seq"] == 0 and samples[1]["seq"] == 1 and samples[2]["seq"] == 2,
+		"samples should be numbered 0, 1, 2 in order")
+	_check(iso.search(str(samples[0].get("created_at", ""))) != null,
+		"a sample should carry the time it was taken, got '%s'" % samples[0].get("created_at"))
+
+	logger.log_event("run_start", 0.0)
+	logger.log_event("death", 1710.0)
+	_check(logger.pending_events[0]["seq"] == 0 and logger.pending_events[1]["seq"] == 1,
+		"events should be numbered separately from samples, starting at 0")
+
+	# Godot's JSON parser turns every number into a float; the server requires an integer seq.
+	logger._save_queue()
+	var fresh = LoggerScript.new()
+	fresh.session_id = fresh._generate_uuid_v4()
+	fresh._load_queue()
+	_check(typeof(fresh.queue[0]["samples"][2]["seq"]) == TYPE_INT, "a reloaded sample seq should be an int again")
+	_check(fresh.queue[0]["samples"][2]["seq"] == 2, "a reloaded sample should keep its number")
+	_check(typeof(fresh.pending_events[1]["seq"]) == TYPE_INT, "a reloaded event seq should be an int again")
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(logger.QUEUE_FILE_PATH))
 	logger.free()

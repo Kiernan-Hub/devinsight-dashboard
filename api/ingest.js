@@ -16,8 +16,8 @@ import { metrics } from "../lib/metrics.mjs";
 // database took. A rising rejected count means a client is sending malformed data; a rising
 // upstream time means the bottleneck is the database, not this function. (Scraped only in the
 // Docker deployment; see lib/metrics.mjs.)
-const samplesTotal = metrics.counter("ingest_samples_total", "Telemetry samples received, by validation result.", ["result"]);
-const eventsTotal = metrics.counter("ingest_events_total", "Gameplay events received, by validation result.", ["result"]);
+const samplesTotal = metrics.counter("ingest_samples_total", "Telemetry samples received, by result: stored, rejected by validation, or a duplicate of one already stored.", ["result"]);
+const eventsTotal = metrics.counter("ingest_events_total", "Gameplay events received, by result: stored, rejected, or duplicate.", ["result"]);
 const upstreamSeconds = metrics.histogram(
   "ingest_upstream_request_duration_seconds",
   "Duration of each request to the database API, by table and outcome.",
@@ -101,40 +101,35 @@ export default async function handler(req, res) {
     return send(res, result.status, { error: result.error });
   }
 
-  const { session, accepted, acceptedEvents, rejected } = result;
+  const { session, accepted, acceptedEvents, rejected, clockOffsetMs } = result;
   const rejectedSamples = rejected.filter(r => r.kind === "sample").length;
-  samplesTotal.inc(["accepted"], accepted.length);
   samplesTotal.inc(["rejected"], rejectedSamples);
-  eventsTotal.inc(["accepted"], acceptedEvents.length);
   eventsTotal.inc(["rejected"], rejected.length - rejectedSamples);
 
+  let stored;
   try {
-    // Upsert the session first: system_logs.session_id references it, so the parent row has to
-    // exist before the samples that point at it.
-    await supabase("sessions?on_conflict=id", {
-      body: [sessionRow(session)],
-      headers: { Prefer: "resolution=merge-duplicates,return=minimal" }
+    // One call, one transaction: the session upsert and both inserts commit together or not at
+    // all (supabase/schema.sql, ingest_batch). As three separate calls, a failure on the last one
+    // left the first two committed; the client saw a 5xx, retried the whole batch, and every
+    // sample in it was written twice. Rows whose (session, seq) is already stored are skipped,
+    // so a retry of a batch that did commit is harmless too.
+    const response = await supabase("rpc/ingest_batch", {
+      body: { p_session: sessionRow(session), p_samples: accepted, p_events: acceptedEvents }
     });
-
-    if (accepted.length) {
-      await supabase("system_logs", {
-        body: accepted,
-        headers: { Prefer: "return=minimal" }
-      });
-    }
-
-    if (acceptedEvents.length) {
-      await supabase("gameplay_events", {
-        body: acceptedEvents,
-        headers: { Prefer: "return=minimal" }
-      });
-    }
+    stored = await response.json();
   } catch (error) {
     // 502, not 400: the client's payload was fine, our downstream was not. The distinction
     // matters to the offline queue — a client must retry this, and must not retry a 400.
     console.error("ingest:", error.message);
     return send(res, 502, { error: "Could not record telemetry" });
   }
+
+  const duplicateSamples = accepted.length - Number(stored?.samples ?? accepted.length);
+  const duplicateEvents = acceptedEvents.length - Number(stored?.events ?? acceptedEvents.length);
+  samplesTotal.inc(["stored"], accepted.length - duplicateSamples);
+  samplesTotal.inc(["duplicate"], duplicateSamples);
+  eventsTotal.inc(["stored"], acceptedEvents.length - duplicateEvents);
+  eventsTotal.inc(["duplicate"], duplicateEvents);
 
   // 200 even when some samples were rejected. The offline queue retries anything that is not a
   // success, so failing the whole batch over one bad row would make that batch a poison pill:
@@ -144,7 +139,13 @@ export default async function handler(req, res) {
     session_id: session.id,
     accepted: accepted.length,
     accepted_events: acceptedEvents.length,
+    // Already stored by an earlier attempt: a retry after a lost response. Not an error.
+    duplicates: duplicateSamples,
+    duplicate_events: duplicateEvents,
     rejected: rejected.length,
+    // How far the client's clock is from the server's, as measured from sent_at. Reported so a
+    // badly-set clock is visible from the client side; samples are already corrected for it.
+    clock_offset_ms: clockOffsetMs,
     ...(rejected.length ? { rejections: rejected.slice(0, 10) } : {}),
     limits: {
       max_samples_per_request: MAX_SAMPLES_PER_REQUEST,

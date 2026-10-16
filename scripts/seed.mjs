@@ -113,14 +113,21 @@ export function buildSeed({ manifest, now, seed = 20261016 }) {
     const climbRate = 11 + rand() * 7; // height units per second
     cursor = startMs - Math.round(20_000 + rand() * 90_000); // a break between sessions
 
+    // Numbered like a 0.7 client numbers them. A session that ended badly loses a few samples
+    // on the way — requests that died with the stutter that preceded the crash — which the
+    // session explorer reports as lost in transit (session_summary.samples_lost).
+    const lossy = outcome === "unclean";
     const samples = [];
     for (let i = 1; i <= sampleCount; i += 1) {
       const seconds = i * SAMPLE_INTERVAL_S;
       const height = seconds * climbRate * (0.92 + rand() * 0.16);
-      samples.push({
+      const sample = {
         ...sampleAt({ seconds, height, culling, rand }),
-        created_at: new Date(startMs + seconds * 1000).toISOString()
-      });
+        created_at: new Date(startMs + seconds * 1000).toISOString(),
+        seq: i - 1
+      };
+      if (lossy && i > 3 && i < sampleCount && rand() < 0.06) continue;
+      samples.push(sample);
     }
 
     const at = seconds => new Date(startMs + seconds * 1000).toISOString();
@@ -138,6 +145,10 @@ export function buildSeed({ manifest, now, seed = 20261016 }) {
       events.push({ event_type: "death", height: finalHeight, created_at: at(sampleCount * SAMPLE_INTERVAL_S), detail: { cause: rand() < 0.7 ? "lava" : "fall" } });
       events.push({ event_type: "run_end", height: finalHeight, created_at: at(sampleCount * SAMPLE_INTERVAL_S) });
     }
+
+    // Numbered in the order they happened, as the client numbers them when it records them.
+    events.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    events.forEach((event, seq) => { event.seq = seq; });
 
     sessions.unshift({
       id: randomUUID(),

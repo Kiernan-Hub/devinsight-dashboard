@@ -54,5 +54,21 @@ begin
     end if;
   end if;
 
-  raise notice 'privileges: RLS on every table; anon read-only; authenticated holds nothing';
+  -- 4. Neither public role can run this project's functions. Postgres grants EXECUTE on every new
+  --    function to PUBLIC by default, so a write-path function like ingest_batch() is callable by
+  --    anyone unless it is explicitly revoked. Functions owned by extensions are skipped: they are
+  --    not this project's to lock down. has_function_privilege() counts grants via PUBLIC too.
+  select string_agg(format('%s can execute %s', r.role, p.oid::regprocedure), E'\n' order by p.proname, r.role)
+    into problems
+  from pg_proc p
+  cross join (values ('anon'), ('authenticated')) as r(role)
+  where p.pronamespace = 'public'::regnamespace
+    and to_regrole(r.role) is not null
+    and not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')
+    and has_function_privilege(r.role, p.oid, 'EXECUTE');
+  if problems is not null then
+    raise exception E'public roles can execute project functions:\n%', problems;
+  end if;
+
+  raise notice 'privileges: RLS on every table; anon read-only; authenticated holds nothing; no public function execution';
 end $$;

@@ -217,7 +217,9 @@ export function sessionDetailPaths(sessionId) {
   return {
     // Its own summary row, so a shared link to a session older than the visible list still
     // knows its build and outcome.
-    summary: `/rest/v1/session_summary?select=id,build_version,platform,started_at,duration_seconds,sample_count,avg_fps,worst_frame_time_ms,outcome&id=eq.${id}`,
+    // select=* rather than a column list: samples_lost only exists once the 0.7 schema is
+    // applied, and naming it would turn its absence into an error instead of a missing detail.
+    summary: `/rest/v1/session_summary?select=*&id=eq.${id}`,
     samples: `/rest/v1/system_logs?select=created_at,fps_rate,frame_time_p95_ms,frame_time_max_ms,height,platform_count&session_id=eq.${id}&order=created_at.asc&limit=${LOG_QUERY_LIMIT}`,
     events: `/rest/v1/gameplay_events?select=created_at,event_type,height,detail&session_id=eq.${id}&order=created_at.asc&limit=500`
   };

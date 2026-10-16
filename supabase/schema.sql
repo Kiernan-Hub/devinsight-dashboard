@@ -215,6 +215,112 @@ create index if not exists system_logs_build_created_idx
   on public.system_logs (build_version, created_at desc);
 
 -- ---------------------------------------------------------------------------
+-- Delivery: exactly-once storage, and loss you can count
+--
+-- The game sends each sample once, but "once" is not something a network can promise. When a
+-- request times out after the database already committed it, the client cannot tell that apart
+-- from a request that never arrived, so it re-queues the batch and sends it again — and every
+-- sample in it was stored twice, quietly inflating the averages the CI gate reads.
+--
+-- From logger 0.7 the client numbers its samples and events per session (`seq`: 0, 1, 2, ...).
+-- (session_id, seq) is unique, and ingest_batch() below inserts with ON CONFLICT DO NOTHING, so a
+-- retry of something already stored is skipped rather than duplicated. The same numbers make
+-- loss visible: a session whose highest seq is 41 but which has 39 rows lost 3 samples on the
+-- way, which session_summary reports as samples_lost.
+--
+-- Older clients send no seq. NULLs never collide in a unique index, so their rows — and every
+-- row already in the table — are unaffected: no backfill, no dedupe pass over existing data.
+-- ---------------------------------------------------------------------------
+
+alter table public.system_logs     add column if not exists seq integer;
+alter table public.gameplay_events add column if not exists seq integer;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'system_logs_seq_sane') then
+    alter table public.system_logs add constraint system_logs_seq_sane check (seq is null or seq >= 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'gameplay_events_seq_sane') then
+    alter table public.gameplay_events add constraint gameplay_events_seq_sane check (seq is null or seq >= 0);
+  end if;
+end $$;
+
+create unique index if not exists system_logs_session_seq_key     on public.system_logs (session_id, seq);
+create unique index if not exists gameplay_events_session_seq_key on public.gameplay_events (session_id, seq);
+
+-- One request from the ingest function, one transaction. This used to be three separate HTTP
+-- calls — upsert the session, insert samples, insert events — so a failure on the third left the
+-- first two committed, the client saw a 5xx, retried the whole batch, and the samples were
+-- written a second time. Inside a function, all three commit together or not at all. It is also
+-- a third of the round trips: under load the three-call version fell behind in 2 of 3 runs at
+-- 400 req/s while this one held p95 under 8 ms in all 3 (loadtest/RESULTS.md).
+--
+-- security invoker: it runs with the caller's privileges (the service role), so it can do
+-- nothing the caller could not do directly. search_path is pinned empty and every name is fully
+-- qualified, so nothing on the caller's search path can shadow a table or operator.
+create or replace function public.ingest_batch(p_session jsonb, p_samples jsonb, p_events jsonb)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  stored_samples integer := 0;
+  stored_events  integer := 0;
+begin
+  insert into public.sessions as s (id, build_version, platform, last_seen_at, ended_at, ended_cleanly)
+  values (
+    (p_session ->> 'id')::uuid,
+    p_session ->> 'build_version',
+    p_session ->> 'platform',
+    (p_session ->> 'last_seen_at')::timestamptz,
+    (p_session ->> 'ended_at')::timestamptz,
+    (p_session ->> 'ended_cleanly')::boolean
+  )
+  on conflict (id) do update set
+    -- greatest(): two requests from one session can arrive out of order, and last_seen_at must
+    -- never move backwards, or a live session could briefly read as abandoned.
+    last_seen_at  = greatest(s.last_seen_at, excluded.last_seen_at),
+    platform      = coalesce(excluded.platform, s.platform),
+    ended_at      = coalesce(excluded.ended_at, s.ended_at),
+    ended_cleanly = coalesce(excluded.ended_cleanly, s.ended_cleanly);
+
+  insert into public.system_logs (
+    created_at, app_name, build_version, session_id, seq, fps_rate, memory_used_mb, session_notes,
+    frame_time_p95_ms, frame_time_max_ms, frames_sampled, height, platform_count, entity_count, lava_speed
+  )
+  select
+    r.created_at, r.app_name, r.build_version, r.session_id, r.seq, r.fps_rate, r.memory_used_mb, r.session_notes,
+    r.frame_time_p95_ms, r.frame_time_max_ms, r.frames_sampled, r.height, r.platform_count, r.entity_count, r.lava_speed
+  from jsonb_to_recordset(coalesce(p_samples, '[]'::jsonb)) as r(
+    created_at timestamptz, app_name text, build_version text, session_id uuid, seq integer,
+    fps_rate integer, memory_used_mb numeric, session_notes text, frame_time_p95_ms numeric,
+    frame_time_max_ms numeric, frames_sampled integer, height numeric, platform_count integer,
+    entity_count integer, lava_speed numeric
+  )
+  on conflict (session_id, seq) do nothing;
+  get diagnostics stored_samples = row_count;
+
+  insert into public.gameplay_events (created_at, session_id, build_version, event_type, height, detail, seq)
+  select r.created_at, r.session_id, r.build_version, r.event_type, r.height, r.detail, r.seq
+  from jsonb_to_recordset(coalesce(p_events, '[]'::jsonb)) as r(
+    created_at timestamptz, session_id uuid, build_version text, event_type text,
+    height numeric, detail jsonb, seq integer
+  )
+  on conflict (session_id, seq) do nothing;
+  get diagnostics stored_events = row_count;
+
+  return jsonb_build_object('samples', stored_samples, 'events', stored_events);
+end;
+$$;
+
+-- Postgres grants EXECUTE on every new function to PUBLIC, and Supabase's defaults add the API
+-- roles on top. This one is the write path, so only the service role may call it. (It is
+-- security invoker, so anon calling it would fail on the table grants anyway — this is the belt.)
+revoke all on function public.ingest_batch(jsonb, jsonb, jsonb) from public, anon, authenticated;
+grant execute on function public.ingest_batch(jsonb, jsonb, jsonb) to service_role;
+
+-- ---------------------------------------------------------------------------
 -- Row-level security
 --
 -- anon is now READ-ONLY. Writes arrive exclusively through /api/ingest, which authenticates
@@ -321,6 +427,11 @@ select
   min(l.fps_rate)                                          as min_fps,
   max(l.frame_time_max_ms)                                 as worst_frame_time_ms,
   max(l.memory_used_mb) - min(l.memory_used_mb)            as memory_growth_mb,
+  -- Numbered samples that never arrived: seq starts at 0, so a session whose highest seq is N
+  -- should have N + 1 rows. Null for clients that do not number their samples. (Samples lost
+  -- after the last one that did arrive — a crash mid-send — are by nature invisible here.)
+  case when count(l.seq) > 0 then max(l.seq) + 1 - count(l.seq) end
+                                                           as samples_lost,
   case
     when s.ended_at is not null and s.ended_cleanly then 'clean'
     when s.ended_at is not null then 'ended_unclean'

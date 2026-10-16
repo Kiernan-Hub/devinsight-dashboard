@@ -91,7 +91,7 @@ jobs:
 
       # The FPS regression gate itself, end to end against a real database. In production it can
       # only be exercised when real players have produced telemetry for the declared builds — and
-      # it cannot be at all while that database is unreachable. The seed contains a deliberate 18%
+      # it cannot be at all while that database is unreachable. The seed contains a deliberate ~25%
       # regression in the current build, so here the gate must find it: exit 1, verdict
       # "regression". A gate that passed this would pass a real regression too.
       - name: Regression gate catches the seeded regression

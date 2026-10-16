@@ -1,5 +1,5 @@
 extends Node
-const BUILD_VERSION := "0.6.0"
+const BUILD_VERSION := "0.7.0"
 
 # Telemetry now goes to our own ingest API rather than straight into Supabase. The database
 # credential that can actually write lives on the server; this client holds only a token that
@@ -68,6 +68,12 @@ var frame_times_ms: Array = []
 var session_id: String = ""
 var session_ended_sent := false
 
+# Every sample and event this session sends is numbered: 0, 1, 2, ... The server stores each
+# (session, number) at most once, so a batch re-sent after a lost response is not stored twice,
+# and a gap in the numbers shows exactly how many samples never arrived.
+var sample_seq: int = 0
+var event_seq: int = 0
+
 # The game registers a Callable here that returns a Dictionary of gameplay context — height,
 # live platform count, lava speed. The logger calls it once per report and never learns
 # anything else about the game, so telemetry stays a bolt-on rather than something the
@@ -126,6 +132,7 @@ func _send_session_end() -> void:
 	session_ended_sent = true
 	var payload = {
 		"session": _session_dict(true),
+		"sent_at": _now_iso(),
 		"samples": []
 	}
 	flush_request.request(INGEST_URL, _headers(), HTTPClient.METHOD_POST, JSON.stringify(payload))
@@ -144,8 +151,10 @@ func register_context_provider(provider: Callable) -> void:
 func log_event(event_type: String, height = null, detail: Dictionary = {}) -> void:
 	var event = {
 		"event_type": event_type,
-		"created_at": Time.get_datetime_string_from_system(true, true) + "Z"
+		"created_at": _now_iso(),
+		"seq": event_seq
 	}
+	event_seq += 1
 	if height != null:
 		event["height"] = float(height)
 	if not detail.is_empty():
@@ -180,6 +189,14 @@ func _load_ingest_token() -> String:
 		return OS.get_environment("INGEST_TOKEN").strip_edges()
 	return ""
 
+# The client's wall clock, UTC, to the millisecond. The server never trusts this clock on its own:
+# each request also carries sent_at from the same clock, and the server dates a sample by how long
+# before sent_at it was taken. A player whose clock is hours wrong still gets correct timestamps.
+func _now_iso() -> String:
+	var now := Time.get_unix_time_from_system()
+	var millis := int(fmod(now, 1.0) * 1000.0)
+	return Time.get_datetime_string_from_unix_time(int(now)) + ".%03dZ" % millis
+
 func _session_dict(ended: bool = false) -> Dictionary:
 	var data = {
 		"id": session_id,
@@ -195,28 +212,39 @@ func _on_timer_timeout() -> void:
 	# Live data and the backlog flush use separate HTTPRequest nodes, so a
 	# stuck/failing backlog never blocks fresh data from being collected.
 	if not is_sending:
-		var fps = Engine.get_frames_per_second()
-		var mem_bytes = OS.get_static_memory_usage()
-		var mem_mb = float(mem_bytes) / 1024.0 / 1024.0
-		var frames = frame_times_ms.size()
-		var data = {
-			"app_name": "Ascent",
-			"fps_rate": int(fps),
-			"memory_used_mb": snapped(mem_mb, 0.01),
-			"session_notes": "auto-logged"
-		}
-		# A window with no frames (game minimised, or the very first tick) has nothing
-		# meaningful to report; send nulls rather than a fabricated zero.
-		if frames > 0:
-			data["frame_time_p95_ms"] = snapped(_percentile(frame_times_ms, 0.95), 0.001)
-			data["frame_time_max_ms"] = snapped(frame_times_ms.max(), 0.001)
-			data["frames_sampled"] = frames
-		frame_times_ms.clear()
-		data.merge(_gameplay_context())
-		_send_entry(data)
+		_send_entry(_take_sample())
 
 	if not is_flushing and not queue.is_empty():
 		_flush_queue()
+
+# One sample: this interval's frame timings, memory, and gameplay context, numbered and stamped at
+# the moment it is taken. Separate from sending so it can be tested without a network.
+func _take_sample() -> Dictionary:
+	var fps = Engine.get_frames_per_second()
+	var mem_bytes = OS.get_static_memory_usage()
+	var mem_mb = float(mem_bytes) / 1024.0 / 1024.0
+	var frames = frame_times_ms.size()
+	# Stamped now, when it is measured, not when it is finally sent: a sample that waits an hour
+	# in the offline queue must still say when it happened. (Before 0.7 the server stamped
+	# arrival time, so a flushed backlog collapsed onto a single instant.)
+	var data = {
+		"app_name": "Ascent",
+		"fps_rate": int(fps),
+		"memory_used_mb": snapped(mem_mb, 0.01),
+		"session_notes": "auto-logged",
+		"created_at": _now_iso(),
+		"seq": sample_seq
+	}
+	sample_seq += 1
+	# A window with no frames (game minimised, or the very first tick) has nothing
+	# meaningful to report; send nulls rather than a fabricated zero.
+	if frames > 0:
+		data["frame_time_p95_ms"] = snapped(_percentile(frame_times_ms, 0.95), 0.001)
+		data["frame_time_max_ms"] = snapped(frame_times_ms.max(), 0.001)
+		data["frames_sampled"] = frames
+	frame_times_ms.clear()
+	data.merge(_gameplay_context())
+	return data
 
 # Linear-interpolated percentile, matching the definition used by the dashboard's
 # percentile() so the two halves of the pipeline agree on what "P95" means.
@@ -236,6 +264,7 @@ func _send_entry(data: Dictionary) -> void:
 	in_flight_event_count = mini(pending_events.size(), MAX_EVENT_BATCH)
 	var payload = {
 		"session": _session_dict(),
+		"sent_at": _now_iso(),
 		"samples": [data]
 	}
 	if in_flight_event_count > 0:
@@ -259,6 +288,7 @@ func _flush_queue() -> void:
 	in_flight_count = mini(samples.size(), MAX_FLUSH_BATCH)
 	var payload = {
 		"session": batch.get("session", _session_dict()),
+		"sent_at": _now_iso(),
 		"samples": samples.slice(0, in_flight_count)
 	}
 	var err = flush_request.request(INGEST_URL, _headers(), HTTPClient.METHOD_POST, JSON.stringify(payload))
@@ -427,6 +457,12 @@ func _load_queue() -> void:
 					entry["fps_rate"] = int(entry["fps_rate"])
 				if entry.has("frames_sampled"):
 					entry["frames_sampled"] = int(entry["frames_sampled"])
+				if entry.has("seq"):
+					entry["seq"] = int(entry["seq"])
+	# The same for events, whose seq the server also requires to be an integer.
+	for event in pending_events:
+		if event is Dictionary and event.has("seq"):
+			event["seq"] = int(event["seq"])
 
 func _generate_uuid_v4() -> String:
 	var bytes := PackedByteArray()

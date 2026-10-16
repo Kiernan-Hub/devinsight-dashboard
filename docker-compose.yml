@@ -161,6 +161,22 @@ services:
     depends_on:
       - prometheus
 
+  # ---- Optional: load test ---------------------------------------------------------------------
+  # npm run loadtest — see loadtest/ingest.js. Talks to the gateway over the internal network,
+  # exactly as an outside client would reach /api/ingest.
+  k6:
+    image: grafana/k6:2.3.0@sha256:9c2dee7f8ed74d317e4027c06a10f169b625638189de8d4555d0b3486a5aeb34
+    profiles: [loadtest]
+    command: ["run", "--quiet", "/scripts/ingest.js"]
+    environment:
+      BASE_URL: http://gateway
+      PEAK_RPS: ${PEAK_RPS:-400}
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
+    volumes:
+      - ./loadtest:/scripts:ro
+    depends_on:
+      - gateway
+
 volumes:
   db-data:
   keys:

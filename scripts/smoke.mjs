@@ -112,7 +112,47 @@ for (const view of ["build_fps_summary", "build_perf_by_height", "death_distribu
     `HTTP ${result.status} ${typeof result.rows === "string" ? result.rows.slice(0, 200) : JSON.stringify(result.rows)}`);
 }
 
-// 3. The public read path must not be a write path. This is the property the whole ingest
+// 3. Delivery guarantees (logger 0.7+): a retried batch is stored once, gaps in the numbering are
+// counted as loss, and a wrong client clock does not move samples in time.
+const delivery = randomUUID();
+const numbered = seqs => ({
+  session: { id: delivery, build_version: BUILD, platform: "smoke-test" },
+  sent_at: new Date().toISOString(),
+  samples: seqs.map(seq => ({ ...sample(0), seq, created_at: new Date(Date.now() - (10 - seq) * 1000).toISOString() }))
+});
+const firstTry = await (await ingest(numbered([0, 1, 3]))).json();
+const retry = await (await ingest(numbered([0, 1, 3]))).json();
+const deliveredRows = await read(`system_logs?select=seq&session_id=eq.${delivery}`);
+check("a retried batch is stored once: the retry reports duplicates, no new rows",
+  firstTry.accepted === 3 && retry.duplicates === 3 && deliveredRows.rows.length === 3,
+  `first ${JSON.stringify(firstTry)}, retry ${JSON.stringify(retry)}, rows ${deliveredRows.rows.length}`);
+
+const lost = await read(`session_summary?select=samples_lost&id=eq.${delivery}`);
+check("a gap in the sequence (0, 1, 3) is reported as one lost sample",
+  lost.rows[0]?.samples_lost === 1, JSON.stringify(lost.rows));
+
+// The client's clock is two hours fast. Its sample was taken 10 s before it sent the request.
+const skewed = randomUUID();
+const fastClock = Date.now() + 2 * 60 * 60 * 1000;
+const skewResult = await (await ingest({
+  session: { id: skewed, build_version: BUILD, platform: "smoke-test" },
+  sent_at: new Date(fastClock).toISOString(),
+  samples: [{ ...sample(0), seq: 0, created_at: new Date(fastClock - 10_000).toISOString() }]
+})).json();
+const skewRow = await read(`system_logs?select=created_at&session_id=eq.${skewed}`);
+const storedAge = (Date.now() - Date.parse(skewRow.rows[0]?.created_at)) / 1000;
+check("a client clock two hours fast is corrected: the sample is dated ~10 s ago, not rejected",
+  skewResult.accepted === 1 && storedAge > 8 && storedAge < 20,
+  `response ${JSON.stringify(skewResult)}, stored ${storedAge.toFixed(1)} s ago`);
+
+const rpc = await fetch(`${base}/rest/v1/rpc/ingest_batch`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ p_session: { id: randomUUID(), build_version: BUILD }, p_samples: [], p_events: [] })
+});
+check("the write function cannot be called with the public key", rpc.status === 401 || rpc.status === 403 || rpc.status === 404, `HTTP ${rpc.status}`);
+
+// 4. The public read path must not be a write path. This is the property the whole ingest
 // endpoint exists to provide; checking it against the real database is the only way to know the
 // grants and policies actually say what the schema's comments claim.
 const forged = await fetch(`${base}/rest/v1/system_logs`, {

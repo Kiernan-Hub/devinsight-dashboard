@@ -71,3 +71,15 @@ test("the backdate SQL refuses anything that is not a generated UUID or timestam
   const hostile = [{ ...sessions[0], id: "x'); drop table sessions; --" }];
   assert.throws(() => backdateSql(hostile), /unsafe seed row/);
 });
+
+test("samples are numbered like a 0.7 client's, with a few lost only where sessions ended badly", () => {
+  for (const session of sessions) {
+    const seqs = session.samples.map(sample => sample.seq);
+    assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "in order");
+    const lost = seqs.at(-1) + 1 - seqs.length;
+    if (session.outcome !== "unclean") assert.equal(lost, 0, `${session.outcome} sessions lose nothing`);
+  }
+  const totalLost = sessions.filter(s => s.outcome === "unclean").reduce((sum, s) => sum + s.samples.at(-1).seq + 1 - s.samples.length, 0);
+  assert.ok(totalLost > 0, "the explorer should have some loss to show");
+  for (const session of sessions) assert.deepEqual(session.events.map(e => e.seq), session.events.map((_, i) => i));
+});

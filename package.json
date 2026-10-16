@@ -1,6 +1,6 @@
 {
   "name": "devinsight-dashboard",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "Live performance telemetry pipeline for the Godot game Ascent.",
@@ -15,6 +15,7 @@
     "start": "node server.mjs",
     "smoke": "node scripts/smoke.mjs",
     "seed": "node scripts/seed.mjs",
+    "loadtest": "docker compose --profile loadtest run --rm k6; status=$?; docker compose exec -T db psql -U postgres -q -c \"delete from system_logs where session_id in (select id from sessions where platform = 'load-test'); delete from sessions where platform = 'load-test';\"; exit $status",
     "db:migrate:local": "docker compose exec -T -e PGOPTIONS='-c client_min_messages=warning' db psql -U postgres -v ON_ERROR_STOP=1 -q < supabase/schema.sql && docker compose kill -s SIGUSR1 rest",
     "benchmark": "node scripts/run-benchmark.mjs",
     "benchmark:update-baseline": "node scripts/run-benchmark.mjs --update-baseline"

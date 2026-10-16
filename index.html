@@ -620,7 +620,8 @@
           duration_seconds: spec.duration, sample_count: count,
           avg_fps: Number((fps.reduce((sum, value) => sum + value, 0) / fps.length).toFixed(2)),
           worst_frame_time_ms: Math.max(...samples.map(sample => sample.frame_time_max_ms)),
-          outcome: spec.outcome
+          outcome: spec.outcome,
+          samples_lost: spec.outcome === "ended_unclean" ? 3 : 0
         };
       });
 
@@ -930,6 +931,9 @@
       const meta = summary
         ? [summary.build_version || "unversioned", outcomeLabel(summary.outcome).text, formatDuration(summary.duration_seconds), plural(Number(summary.sample_count), "sample")]
         : [plural(samples.length, "sample")];
+      // Builds from 0.7 number their samples, so the gaps are countable: requests that never
+      // arrived. Older builds (and older databases) report nothing here rather than "0 lost".
+      if (Number(summary?.samples_lost) > 0) meta.push(`${plural(Number(summary.samples_lost), "sample")} lost in transit`);
       $("sessionMeta").textContent = meta.join(" · ");
       // A session still running keeps updating; a concluded one never changes, so is fetched once.
       sessionNeedsRefresh = summary?.outcome === "active";
