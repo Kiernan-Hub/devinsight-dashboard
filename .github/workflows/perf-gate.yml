@@ -63,6 +63,8 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      result: ${{ steps.verdict.outputs.result }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,4 +83,48 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          GATE_RESULT_FILE: gate-result.json
         run: npm run check:regression
+
+      # The verdict as data for the alert job, exported even when the step above failed — a
+      # regression and a gate that could not run both fail it, and they need different alerts.
+      # JSON.stringify writes one line, so the value cannot smuggle in extra output lines.
+      - name: Export verdict
+        id: verdict
+        if: always()
+        run: |
+          if [ -s gate-result.json ]; then
+            echo "result=$(cat gate-result.json)" >> "$GITHUB_OUTPUT"
+          else
+            echo 'result={"status":"error","message":"The gate exited without reporting a verdict; see the Check for FPS regression step."}' >> "$GITHUB_OUTPUT"
+          fi
+
+  # Turns the gate's verdict on main into GitHub issues: one for a regression, one for a gate that
+  # cannot run at all, each opened once and closed automatically when the condition clears. See
+  # scripts/alert-core.mjs for the rules. Main only: on a pull request the red check is already in
+  # front of the person who needs to see it.
+  alert:
+    name: Regression alerts
+    needs: check-regression
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      (needs.check-regression.result == 'success' || needs.check-regression.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Open, update or close alert issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GATE_RESULT: ${{ needs.check-regression.outputs.result }}
+        run: node scripts/alert.mjs

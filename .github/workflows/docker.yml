@@ -80,6 +80,22 @@ jobs:
           npm run test:db
           npm run --silent smoke
 
+      # The FPS regression gate itself, end to end against a real database. In production it can
+      # only be exercised when real players have produced telemetry for the declared builds — and
+      # it cannot be at all while that database is unreachable. The seed contains a deliberate 18%
+      # regression in the current build, so here the gate must find it: exit 1, verdict
+      # "regression". A gate that passed this would pass a real regression too.
+      - name: Regression gate catches the seeded regression
+        run: |
+          npm run --silent seed
+          status=0
+          GATE_RESULT_FILE=gate-result.json npm run --silent check:regression:local || status=$?
+          if [ "$status" -ne 1 ] || ! jq -e '.status == "regression"' gate-result.json > /dev/null; then
+            echo "::error::expected the gate to report the seeded regression (exit 1); got exit $status: $(cat gate-result.json 2> /dev/null)"
+            exit 1
+          fi
+          echo "Gate correctly reported: $(jq -r .message gate-result.json)"
+
       - name: Container logs
         if: failure()
         run: docker compose logs --no-color

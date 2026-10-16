@@ -9,7 +9,7 @@
 // Godot logger really stamps that version, and only then does it compare that specific
 // version against its specific baseline.
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { verdictFor } from "./dashboard-core.mjs";
@@ -83,6 +83,13 @@ async function fetchBuild(version) {
   return rows[0] ?? null;
 }
 
+// The verdict as data, for perf-gate.yml's alert job (scripts/alert.mjs), alongside the
+// human-readable log. Only written when GATE_RESULT_FILE is set. If the gate exits without writing
+// it at all, the alert job reads that as "could not run" — never as a pass.
+async function writeResult(result) {
+  if (process.env.GATE_RESULT_FILE) await writeFile(process.env.GATE_RESULT_FILE, JSON.stringify(result));
+}
+
 function describe(row) {
   if (!row) return "no telemetry recorded";
   return `${Number(row.avg_fps).toFixed(1)} FPS over ${row.sample_count} samples`;
@@ -103,6 +110,12 @@ async function main() {
   console.log(`Baseline:    ${manifest.baseline_version} — ${describe(baseline)}`);
   console.log("");
   console.log(verdict.message);
+  await writeResult({
+    status: verdict.status,
+    message: verdict.message,
+    build: manifest.build_version,
+    baseline: manifest.baseline_version
+  });
 
   // A gate that cannot yet judge must not report success — that is how a real regression
   // slips through green. "pending" is surfaced as a neutral, clearly-labelled non-failure.
@@ -114,6 +127,12 @@ async function main() {
 try {
   process.exit(await main());
 } catch (error) {
-  console.error(`\nPerformance gate could not run: ${error.message}`);
+  // Node's fetch reports every network failure as just "fetch failed" and hides the reason in
+  // `cause`. "fetch failed" is what this gate said for weeks while the Supabase project's hostname
+  // no longer resolved; "fetch failed (ENOTFOUND <host>)" would have said what was wrong.
+  const cause = error.cause?.code ? ` (${error.cause.code}${error.cause.hostname ? ` ${error.cause.hostname}` : ""})` : "";
+  const message = `${error.message}${cause}`;
+  console.error(`\nPerformance gate could not run: ${message}`);
+  await writeResult({ status: "error", message }).catch(() => {});
   process.exit(1);
 }

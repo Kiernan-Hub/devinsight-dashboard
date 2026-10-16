@@ -334,6 +334,7 @@ Design decisions worth defending:
 npm test               # also covers the adapter and key generator (no Docker needed)
 npm run test:db        # privilege + RLS invariants, against the running local database
 npm run db:migrate:local  # re-apply schema.sql to the running database (it is idempotent)
+npm run check:regression:local  # the real CI gate, against the local database (try it after seeding)
 ```
 
 **Demo data.** [`scripts/seed.mjs`](scripts/seed.mjs) replays about three hours of play across
@@ -357,9 +358,9 @@ Five workflows run on every push and pull request to `main`:
 
 | Workflow | What it proves |
 |---|---|
-| [`perf-gate.yml`](.github/workflows/perf-gate.yml) | Unit tests (Node + Godot), and the real-telemetry FPS regression gate |
+| [`perf-gate.yml`](.github/workflows/perf-gate.yml) | Unit tests (Node + Godot), and the real-telemetry FPS regression gate; on `main`, opens and closes alert issues (below) |
 | [`benchmark-gate.yml`](.github/workflows/benchmark-gate.yml) | The headless benchmark has not regressed against the committed baseline; the numbers are posted on the pull request as one comment, edited on each push |
-| [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself. On `main`, publishes the image that just passed |
+| [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself; the FPS gate, run against seeded data with a deliberate 18% regression, catches it. On `main`, publishes the image that just passed |
 | [`lint.yml`](.github/workflows/lint.yml) | Biome (JavaScript correctness), actionlint (the workflows themselves), hadolint (the Dockerfile) |
 | [`codeql.yml`](.github/workflows/codeql.yml) | GitHub's security analysis over the JavaScript *and* the workflows (also weekly) |
 
@@ -391,6 +392,19 @@ How the pipeline itself is hardened, and why:
   smoke workflow was checked the other way round too — run with a deliberately broken
   Dockerfile and with anon's insert grant restored, and confirmed to fail on both.
 
+**Alerts without a chat account.** When the FPS gate runs on `main`, its verdict becomes GitHub
+issues, which GitHub emails to everyone watching the repository: one for a **regression** (opened
+once, a comment with fresh numbers on each later regressed run, closed automatically on recovery),
+and one for a gate that **cannot run at all**. The second exists because of a real gap: the
+Supabase project was paused for inactivity in September 2026, the gate failed on every push from
+then on, and nothing said so for weeks — a red check on a commit nobody is looking at is not an
+alert. The two are kept apart because "slower" and "blind" need different fixes, and "pending"
+(too little data) is neither: no data is not evidence of recovery, so it never closes a regression
+alert. The rules are pure functions in [`scripts/alert-core.mjs`](scripts/alert-core.mjs), tested
+through a whole regression → outage → recovery lifecycle against an in-memory stand-in for
+GitHub's API. The gate's error messages now say *why* a request failed (`fetch failed (ENOTFOUND
+<host>)`), not just that it did.
+
 **Settings only the repository owner can switch on** (they live in GitHub, not in the code):
 
 1. *Settings → Code security*: **secret scanning** and **push protection**. Push protection
@@ -415,7 +429,7 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 87 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator and demo seed
+npm test           # 94 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed and alerting
 npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
 ```
 
