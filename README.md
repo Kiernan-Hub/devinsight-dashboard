@@ -358,7 +358,7 @@ Five workflows run on every push and pull request to `main`:
 | Workflow | What it proves |
 |---|---|
 | [`perf-gate.yml`](.github/workflows/perf-gate.yml) | Unit tests (Node + Godot), and the real-telemetry FPS regression gate |
-| [`benchmark-gate.yml`](.github/workflows/benchmark-gate.yml) | The headless benchmark has not regressed against the committed baseline |
+| [`benchmark-gate.yml`](.github/workflows/benchmark-gate.yml) | The headless benchmark has not regressed against the committed baseline; the numbers are posted on the pull request as one comment, edited on each push |
 | [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself. On `main`, publishes the image that just passed |
 | [`lint.yml`](.github/workflows/lint.yml) | Biome (JavaScript correctness), actionlint (the workflows themselves), hadolint (the Dockerfile) |
 | [`codeql.yml`](.github/workflows/codeql.yml) | GitHub's security analysis over the JavaScript *and* the workflows (also weekly) |
@@ -380,7 +380,11 @@ How the pipeline itself is hardened, and why:
   asks for exactly what it uses. The only write permission anywhere is `packages: write`, on the
   publish job, which only runs on `main`. Registry login uses the short-lived `GITHUB_TOKEN`; no
   personal token or registry password is stored. Checkouts do not leave the token behind in
-  `.git/config` (`persist-credentials: false`).
+  `.git/config` (`persist-credentials: false`). The benchmark's pull-request comment is posted by a
+  separate job from the one that runs the benchmark: the benchmark job executes the pull
+  request's own code, so it holds a read-only token, and the commenting job — which can write —
+  never checks out or runs anything from the PR. Its text arrives through an environment
+  variable, never pasted into the script, so crafted output cannot run as shell.
 - **A green check has to mean something.** Steps that pipe output (`npm run smoke | tee`) set
   `shell: bash` explicitly: left unspecified, GitHub's default shell does not enable `pipefail`,
   so the pipe would report `tee`'s exit code and a failing smoke test would show as passing. The

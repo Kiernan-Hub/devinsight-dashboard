@@ -17,9 +17,8 @@ env:
   # "latest" would make a CI failure impossible to reproduce locally.
   GODOT_VERSION: "4.7"
 
-# Read-only: these jobs check out code and report pass/fail, and need nothing else.
-permissions:
-  contents: read
+# Nothing by default; each job asks for what it uses.
+permissions: {}
 
 # `shell: bash` is not the same as leaving the shell unspecified. Unspecified, GitHub runs steps
 # with `bash -e`, which does NOT set pipefail: `npm run benchmark | tee summary` would then report
@@ -33,6 +32,12 @@ jobs:
   benchmark:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # This job runs the pull request's own code (the benchmark scene and runner), so it gets a
+    # read-only token and nothing else. Posting the result is a separate job, below.
+    permissions:
+      contents: read
+    outputs:
+      report: ${{ steps.run.outputs.report }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -50,14 +55,75 @@ jobs:
           chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
 
-      # Also written to the run's summary page, so the numbers are visible without opening logs.
+      # The result goes three places: the job log, the run's summary page, and a job output that
+      # the comment job below posts on the pull request.
       - name: Run headless benchmark and compare against the committed baseline
+        id: run
         run: |
+          status=0
+          npm run --silent benchmark > benchmark.txt 2>&1 || status=$?
+          cat benchmark.txt
           {
             echo '### Headless benchmark'
             echo '```'
+            cat benchmark.txt
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          status=0
-          npm run --silent benchmark 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # A multi-line output needs a delimiter. A fixed one could appear in the output itself
+          # (which the PR's code produces) and end the value early, letting the rest be read as
+          # further outputs; a random one cannot be predicted.
+          delimiter="BENCHMARK_$(openssl rand -hex 16)"
+          {
+            echo "report<<$delimiter"
+            cat benchmark.txt
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
           exit "$status"
+
+  # Puts the benchmark result on the pull request itself, as one comment that is edited on each
+  # push rather than a new comment every time.
+  #
+  # The reason this is its own job: posting a comment needs a token that can write to the pull
+  # request, and the benchmark job runs the pull request's code. Any token in that job is a token
+  # a malicious pull request could read. This job never checks out or runs anything from the PR;
+  # it only receives the text output, passes it through an environment variable (never pasted
+  # into the script, which would let crafted output run as shell), and posts it.
+  comment:
+    name: Comment on pull request
+    needs: benchmark
+    # always(): a regression is exactly the result most worth posting. Same-repository PRs only:
+    # on a fork's PR GitHub hands out a read-only token regardless, and the step would just fail.
+    if: >-
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.benchmark.outputs.report != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Create or update the benchmark comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPORT: ${{ needs.benchmark.outputs.report }}
+          RESULT: ${{ needs.benchmark.result }}
+          PR: ${{ github.event.pull_request.number }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          marker='<!-- devinsight:benchmark -->'
+          case "$RESULT" in
+            success) verdict='passed' ;;
+            failure) verdict='failed' ;;
+            *) verdict="$RESULT" ;;
+          esac
+          fence='```'
+          body="$(printf '%s\n### Headless benchmark %s\n\nCommit %s\n\n%s\n%s\n%s\n' \
+            "$marker" "$verdict" "${SHA:0:7}" "$fence" "$REPORT" "$fence")"
+          # Only ever edit this workflow's own earlier comment, found by its hidden marker.
+          existing="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq "map(select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"$marker\")))) | .[0].id // empty")"
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -f body="$body" > /dev/null
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$body" > /dev/null
+          fi
