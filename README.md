@@ -6,8 +6,13 @@ time. Two independent CI gates watch for regressions: one reads real player tele
 build a commit declares, the other runs a deterministic headless benchmark on every single push
 and PR so a regression signal exists even before any human has played the build.
 
-**Pipeline:** Godot (`godot/system_logger.gd`) → `POST /api/ingest` (Vercel Function) → Supabase
-(Postgres) → `index.html` dashboard (Chart.js) → GitHub Actions performance gate on every push.
+**The story behind it** — every bug found, how it was found, and what the measurements say — is in
+[`docs/CASE_STUDY.md`](docs/CASE_STUDY.md). To run the whole thing locally with no accounts:
+`docker compose up --build --wait && npm run seed`, then open http://localhost:8080.
+
+**Pipeline:** Godot (`godot/system_logger.gd`) → `POST /api/ingest` (Vercel Function, or the same
+file in Docker) → one transaction in Postgres (Supabase) → `index.html` dashboard (Chart.js) →
+GitHub Actions gates on every pull request, with alerts as GitHub issues.
 
 <img src="assets/architecture.svg" alt="Architecture: the Godot client sends a numbered, timestamped sample every 5 seconds to POST /api/ingest, keeping it in an on-disk queue and retrying with the same sequence number if a send fails, so it is stored once. The ingest API (a Vercel Function in production, the same file in a Docker image locally) validates each row and writes the batch with one transactional call into Postgres. The dashboard reads views with the public, read-only key. The FPS regression gate in GitHub Actions reads the same views and turns its verdict on main into GitHub issues. Prometheus and Grafana scrape the ingest service. Every pull request runs unit tests, a whole-stack Docker smoke test, a headless benchmark, linters and CodeQL.">
 
