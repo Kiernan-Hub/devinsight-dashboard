@@ -18,15 +18,15 @@ var failures := 0
 var checks := 0
 
 func _initialize() -> void:
-	_run("uuid v4 has the right shape", func(): _test_uuid())
-	_run("percentile interpolates like the dashboard's", func(): _test_percentile())
-	_run("samples group into one batch per session", func(): _test_batching())
-	_run("the queue caps its total sample count", func(): _test_trim_cap())
-	_run("an in-flight batch is never trimmed out from under the server", func(): _test_trim_protects_inflight())
-	_run("a successful flush removes only the rows it carried", func(): _test_flush_removes_only_sent())
-	_run("legacy flat queue files keep their original build version", func(): _test_legacy_migration())
-	_run("the context provider decorates each sample", func(): _test_context_provider())
-	_run("events queue, cap, and survive a restart", func(): _test_events())
+	_run("uuid v4 has the right shape", func(): return _test_uuid())
+	_run("percentile interpolates like the dashboard's", func(): return _test_percentile())
+	_run("samples group into one batch per session", func(): return _test_batching())
+	_run("the queue caps its total sample count", func(): return _test_trim_cap())
+	_run("an in-flight batch is never trimmed out from under the server", func(): return _test_trim_protects_inflight())
+	_run("a successful flush removes only the rows it carried", func(): return _test_flush_removes_only_sent())
+	_run("legacy flat queue files keep their original build version", func(): return _test_legacy_migration())
+	_run("the context provider decorates each sample", func(): return _test_context_provider())
+	_run("events queue, cap, and survive a restart", func(): return _test_events())
 
 	print("")
 	if failures == 0:
@@ -35,8 +35,16 @@ func _initialize() -> void:
 		printerr("FAIL — %d of %d checks failed" % [failures, checks])
 	quit(1 if failures > 0 else 0)
 
+# Every test ends with `return true`. A GDScript runtime error does not stop the script: it
+# abandons the current function and carries on, so a test that crashed half-way used to print
+# "ok" having skipped every check after the crash. A test that never reached its last line is
+# now a failure.
 func _run(name: String, body: Callable) -> void:
-	body.call()
+	var finished = body.call()
+	if finished != true:
+		failures += 1
+		printerr("  FAIL: %s stopped before its last line (see the script error above)" % name)
+		return
 	print("  ok  %s" % name)
 
 func _check(condition: bool, message: String) -> void:
@@ -55,7 +63,7 @@ func _sample(fps: int) -> Dictionary:
 
 # ---------------------------------------------------------------------------
 
-func _test_uuid() -> void:
+func _test_uuid() -> bool:
 	var logger = _new_logger()
 	var id = logger._generate_uuid_v4()
 	var re = RegEx.new()
@@ -63,16 +71,18 @@ func _test_uuid() -> void:
 	_check(re.search(id) != null, "uuid '%s' does not match the v4 shape the server validates" % id)
 	_check(id != logger._generate_uuid_v4(), "two generated uuids collided")
 	logger.free()
+	return true
 
-func _test_percentile() -> void:
+func _test_percentile() -> bool:
 	var logger = _new_logger()
 	# Same definition as dashboard-core.mjs: linear interpolation between neighbours.
 	_check(abs(logger._percentile([10.0, 20.0, 30.0], 0.5) - 20.0) < 0.001, "p50 of [10,20,30] should be 20")
 	_check(abs(logger._percentile([10.0, 20.0], 0.5) - 15.0) < 0.001, "p50 of [10,20] should interpolate to 15")
 	_check(logger._percentile([], 0.95) == 0.0, "empty percentile should be 0")
 	logger.free()
+	return true
 
-func _test_batching() -> void:
+func _test_batching() -> bool:
 	var logger = _new_logger()
 	logger._enqueue(_sample(60))
 	logger._enqueue(_sample(59))
@@ -85,8 +95,9 @@ func _test_batching() -> void:
 	logger._enqueue(_sample(58))
 	_check(logger.queue.size() == 2, "a new session should open a new batch, got %d" % logger.queue.size())
 	logger.free()
+	return true
 
-func _test_trim_cap() -> void:
+func _test_trim_cap() -> bool:
 	var logger = _new_logger()
 	for i in logger.MAX_QUEUE_SIZE + 25:
 		logger._enqueue(_sample(60))
@@ -96,8 +107,9 @@ func _test_trim_cap() -> void:
 	var last_batch = logger.queue[-1]["samples"]
 	_check(last_batch.size() > 0, "newest samples should survive trimming")
 	logger.free()
+	return true
 
-func _test_trim_protects_inflight() -> void:
+func _test_trim_protects_inflight() -> bool:
 	var logger = _new_logger()
 	# Three distinctively-marked samples stand in for the rows inside an in-flight request.
 	for marker in [11, 12, 13]:
@@ -118,8 +130,9 @@ func _test_trim_protects_inflight() -> void:
 		_check(remaining.size() > i and remaining[i]["fps_rate"] == marker,
 			"in-flight sample %d was trimmed away; the flush cleanup would then pop the wrong rows" % marker)
 	logger.free()
+	return true
 
-func _test_flush_removes_only_sent() -> void:
+func _test_flush_removes_only_sent() -> bool:
 	var logger = _new_logger()
 	for i in 5:
 		logger._enqueue(_sample(60 + i))
@@ -144,8 +157,9 @@ func _test_flush_removes_only_sent() -> void:
 	_check(fps_left.has(99), "the sample queued during the flush must survive it")
 	_check(not fps_left.has(60), "the first flushed sample should have been removed")
 	logger.free()
+	return true
 
-func _test_legacy_migration() -> void:
+func _test_legacy_migration() -> bool:
 	var logger = _new_logger()
 	# A pre-0.5.0 queue file: a flat array of samples that carry their own build_version.
 	var legacy = [
@@ -173,9 +187,9 @@ func _test_legacy_migration() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(logger.QUEUE_FILE_PATH))
 	logger.free()
 	fresh.free()
+	return true
 
-
-func _test_context_provider() -> void:
+func _test_context_provider() -> bool:
 	var logger = _new_logger()
 	_check(logger._gameplay_context().is_empty(), "no provider registered should yield no context")
 
@@ -189,8 +203,9 @@ func _test_context_provider() -> void:
 	logger.register_context_provider(func(): return "not a dictionary")
 	_check(logger._gameplay_context().is_empty(), "a malformed provider result should degrade to no context")
 	logger.free()
+	return true
 
-func _test_events() -> void:
+func _test_events() -> bool:
 	var logger = _new_logger()
 	logger.log_event("death", 4210.0, {"cause": "lava"})
 	logger.log_event("powerup", 900.0)
@@ -230,3 +245,4 @@ func _test_events() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(logger.QUEUE_FILE_PATH))
 	logger.free()
 	fresh.free()
+	return true

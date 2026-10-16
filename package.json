@@ -6,7 +6,7 @@
   "description": "Live performance telemetry pipeline for the Godot game Ascent.",
   "scripts": {
     "test": "node --test scripts/ lib/",
-    "test:godot": "godot --headless --path godot --script tests/test_logger_queue.gd && godot --headless --path godot --script tests/test_benchmark_model.gd",
+    "test:godot": "node scripts/run-godot-tests.mjs",
     "test:db": "docker compose exec -T db psql -U postgres -v ON_ERROR_STOP=1 -q < supabase/tests/privileges.sql",
     "check:regression": "node scripts/check-regression.mjs",
     "check:regression:local": "SUPABASE_URL=http://localhost:8080 SUPABASE_SERVICE_ROLE_KEY=\"$(docker compose exec -T ingest cat /keys/service-role.jwt)\" node scripts/check-regression.mjs",

@@ -14,10 +14,10 @@ var failures := 0
 var checks := 0
 
 func _initialize() -> void:
-	_run("hazard speed rises linearly then caps", func(): _test_hazard_speed())
-	_run("density grows with height and never divides by zero", func(): _test_density())
-	_run("culling triggers only once buffer distance has passed", func(): _test_should_cull())
-	_run("advance() is a pure step with no side effects", func(): _test_advance())
+	_run("hazard speed rises linearly then caps", func(): return _test_hazard_speed())
+	_run("density grows with height and never divides by zero", func(): return _test_density())
+	_run("culling triggers only once buffer distance has passed", func(): return _test_should_cull())
+	_run("advance() is a pure step with no side effects", func(): return _test_advance())
 
 	print("")
 	if failures == 0:
@@ -26,8 +26,16 @@ func _initialize() -> void:
 		printerr("FAIL — %d of %d checks failed" % [failures, checks])
 	quit(1 if failures > 0 else 0)
 
+# Every test ends with `return true`. A GDScript runtime error does not stop the script: it
+# abandons the current function and carries on, so a test that crashed half-way used to print
+# "ok" having skipped every check after the crash. A test that never reached its last line is
+# now a failure.
 func _run(name: String, body: Callable) -> void:
-	body.call()
+	var finished = body.call()
+	if finished != true:
+		failures += 1
+		printerr("  FAIL: %s stopped before its last line (see the script error above)" % name)
+		return
 	print("  ok  %s" % name)
 
 func _check(condition: bool, message: String) -> void:
@@ -36,15 +44,16 @@ func _check(condition: bool, message: String) -> void:
 		failures += 1
 		printerr("  FAIL: %s" % message)
 
-func _test_hazard_speed() -> void:
+func _test_hazard_speed() -> bool:
 	var at_zero = BenchmarkModel.hazard_speed(0.0)
 	var at_mid = BenchmarkModel.hazard_speed(1000.0)
 	var at_high = BenchmarkModel.hazard_speed(1_000_000.0)
 	_check(is_equal_approx(at_zero, BenchmarkModel.HAZARD_BASE_SPEED), "at height 0, speed should equal the base speed")
 	_check(at_mid > at_zero, "speed should rise with height")
 	_check(is_equal_approx(at_high, BenchmarkModel.HAZARD_MAX_SPEED), "speed must cap at HAZARD_MAX_SPEED, not grow unbounded")
+	return true
 
-func _test_density() -> void:
+func _test_density() -> bool:
 	var at_zero = BenchmarkModel.density_for_height(0.0)
 	var at_high = BenchmarkModel.density_for_height(10000.0)
 	_check(is_equal_approx(at_zero, BenchmarkModel.BASE_DENSITY), "density at height 0 should equal the base density")
@@ -58,13 +67,15 @@ func _test_density() -> void:
 	# An extreme, physically implausible height must not produce a division blow-up.
 	var extreme = BenchmarkModel.spawn_interval_for_height(1e12)
 	_check(is_finite(extreme) and extreme > 0.0, "spawn interval must stay finite and positive even at an extreme height")
+	return true
 
-func _test_should_cull() -> void:
+func _test_should_cull() -> bool:
 	_check(not BenchmarkModel.should_cull(100.0, 50.0), "an obstacle well ahead of the hazard should not be culled")
 	_check(not BenchmarkModel.should_cull(100.0, 100.0 - BenchmarkModel.CULL_BUFFER + 1.0), "an obstacle just inside the buffer should survive")
 	_check(BenchmarkModel.should_cull(100.0, 100.0 + BenchmarkModel.CULL_BUFFER + 1.0), "an obstacle well past the buffer must be culled")
+	return true
 
-func _test_advance() -> void:
+func _test_advance() -> bool:
 	var state = BenchmarkModel.advance(0.0, 0.0)
 	_check(is_equal_approx(state["height"], BenchmarkModel.CLIMB_RATE), "height should advance by exactly CLIMB_RATE per tick")
 	_check(state["hazard_height"] > 0.0, "hazard height should advance too")
@@ -75,3 +86,4 @@ func _test_advance() -> void:
 	var state_b = BenchmarkModel.advance(500.0, 300.0)
 	_check(state_a["height"] == state_b["height"] and state_a["hazard_height"] == state_b["hazard_height"],
 		"advance() must be deterministic: identical inputs produced different outputs")
+	return true
