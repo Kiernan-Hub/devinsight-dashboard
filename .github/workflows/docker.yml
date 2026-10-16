@@ -70,6 +70,15 @@ jobs:
       - name: Database privilege and RLS invariants
         run: npm run test:db
 
+      # Prometheus rejects a malformed scrape as a whole, so one bad line in lib/metrics.mjs would
+      # silently lose every metric. Checked with Prometheus's own validator, from inside the
+      # Compose network (the gateway deliberately does not expose /metrics).
+      - name: Metrics endpoint is valid Prometheus exposition
+        run: |
+          docker run --rm --network devinsight_default --entrypoint sh \
+            prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e \
+            -c 'wget -qO- http://ingest:8787/metrics | promtool check metrics'
+
       # schema.sql claims to be safe to re-run, and once was not (see its build_session_health
       # comment). Applying it twice more on top of a populated database, then re-checking
       # everything, is what keeps that claim true.

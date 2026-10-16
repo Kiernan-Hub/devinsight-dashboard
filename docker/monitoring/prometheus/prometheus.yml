@@ -1,0 +1,10 @@
+# Scrapes the ingest service's /metrics (lib/metrics.mjs) every 5 seconds — the same cadence the
+# game reports at, so a burst of traffic is visible within one or two scrapes.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: ingest
+    static_configs:
+      - targets: ["ingest:8787"]

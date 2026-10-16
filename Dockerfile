@@ -3,7 +3,7 @@
 #   docker build -t devinsight-ingest .
 #
 # Small on purpose. The repository has no npm dependencies, so there is no `npm install`
-# step and no node_modules: the image is the Node runtime plus five source files.
+# step and no node_modules: the image is the Node runtime plus six source files.
 
 # Pinned to an exact image digest as well as a tag. A tag like `24-alpine` is a moving pointer
 # that is re-published every time Node or Alpine ships a patch, so the same Dockerfile could
@@ -19,7 +19,7 @@ WORKDIR /app
 # package.json is needed for one line: "type": "module", which makes api/ingest.js an ES module.
 COPY package.json server.mjs ./
 COPY api/ingest.js ./api/
-COPY lib/ingest-core.mjs lib/node-server.mjs ./lib/
+COPY lib/ingest-core.mjs lib/metrics.mjs lib/node-server.mjs ./lib/
 
 # The official Node image ships an unprivileged `node` user, uid 1000. Running as root inside a
 # container is not the same as root on the host, but it is one kernel bug away from it, and a web

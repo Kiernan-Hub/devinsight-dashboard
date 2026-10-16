@@ -337,6 +337,26 @@ npm run db:migrate:local  # re-apply schema.sql to the running database (it is i
 npm run check:regression:local  # the real CI gate, against the local database (try it after seeding)
 ```
 
+**Monitoring the pipeline itself.** A telemetry pipeline that cannot report on itself has a
+blind spot exactly where it matters: "are samples being dropped?" and "is ingest getting slower?"
+are questions about the ingest service, not the game. The Docker image serves Prometheus metrics
+at `/metrics` — requests and latency by route and status, samples and events accepted versus
+rejected, time spent in each database call, event-loop delay and memory — written by hand in
+[`lib/metrics.mjs`](lib/metrics.mjs) (no dependencies) and checked in CI with Prometheus's own
+`promtool`. An opt-in Compose profile adds Prometheus and a provisioned Grafana dashboard:
+
+```sh
+docker compose --profile monitoring up -d --wait
+open http://localhost:3001        # Grafana, read-only, no login
+```
+
+Two details worth knowing: the `route` label is one of a fixed set, never the raw URL path, so a
+client cannot create unlimited time series by requesting `/x1`, `/x2`, ...; and `/metrics` is only
+reachable inside the Docker network — the public gateway does not route to it. Grafana is
+anonymous and read-only; hiding its login form turned out not to be enough (its built-in
+`admin/admin` still worked over the API, found by trying it), so the default admin account is
+never created and API password auth is off.
+
 **Demo data.** [`scripts/seed.mjs`](scripts/seed.mjs) replays about three hours of play across
 three builds through the real `/api/ingest`, telling the story the dashboard exists to catch: the
 current build stops culling platforms past height 1500, so frame time climbs with height, average
@@ -429,7 +449,7 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 94 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed and alerting
+npm test           # 102 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed, alerting and metrics format
 npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
 ```
 

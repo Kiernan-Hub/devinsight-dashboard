@@ -10,6 +10,19 @@
 // with real write power now lives only here, in server-side environment variables.
 
 import { normalizeIngest, sessionRow, MAX_SAMPLES_PER_REQUEST, MAX_EVENTS_PER_REQUEST } from "../lib/ingest-core.mjs";
+import { metrics } from "../lib/metrics.mjs";
+
+// What the HTTP-level metrics cannot see: how much of each batch was usable, and how long the
+// database took. A rising rejected count means a client is sending malformed data; a rising
+// upstream time means the bottleneck is the database, not this function. (Scraped only in the
+// Docker deployment; see lib/metrics.mjs.)
+const samplesTotal = metrics.counter("ingest_samples_total", "Telemetry samples received, by validation result.", ["result"]);
+const eventsTotal = metrics.counter("ingest_events_total", "Gameplay events received, by validation result.", ["result"]);
+const upstreamSeconds = metrics.histogram(
+  "ingest_upstream_request_duration_seconds",
+  "Duration of each request to the database API, by table and outcome.",
+  ["table", "outcome"]
+);
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -25,16 +38,23 @@ function send(res, status, payload) {
 }
 
 async function supabase(path, { method = "POST", body, headers = {} }) {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    method,
-    headers: {
-      apikey: SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
-      "Content-Type": "application/json",
-      ...headers
-    },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
+  const table = path.split("?")[0];
+  const started = performance.now();
+  let response;
+  try {
+    response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method,
+      headers: {
+        apikey: SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+        ...headers
+      },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } finally {
+    upstreamSeconds.observe([table, response?.ok ? "ok" : "error"], (performance.now() - started) / 1000);
+  }
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
@@ -82,6 +102,11 @@ export default async function handler(req, res) {
   }
 
   const { session, accepted, acceptedEvents, rejected } = result;
+  const rejectedSamples = rejected.filter(r => r.kind === "sample").length;
+  samplesTotal.inc(["accepted"], accepted.length);
+  samplesTotal.inc(["rejected"], rejectedSamples);
+  eventsTotal.inc(["accepted"], acceptedEvents.length);
+  eventsTotal.inc(["rejected"], rejected.length - rejectedSamples);
 
   try {
     // Upsert the session first: system_logs.session_id references it, so the parent row has to

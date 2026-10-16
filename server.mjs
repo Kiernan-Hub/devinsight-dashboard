@@ -9,7 +9,8 @@
 // be given as a file path via the `_FILE` suffix — e.g. SUPABASE_SERVICE_ROLE_KEY_FILE.
 
 import { readFileSync } from "node:fs";
-import { createServer, resolveSecretFiles } from "./lib/node-server.mjs";
+import { metrics } from "./lib/metrics.mjs";
+import { createServer, registerProcessMetrics, resolveSecretFiles } from "./lib/node-server.mjs";
 
 // This has to happen before the handler is imported, because api/ingest.js reads its
 // configuration once, when the module first loads.
@@ -18,7 +19,8 @@ resolveSecretFiles(process.env, ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "I
 const { default: ingest } = await import("./api/ingest.js");
 
 const port = Number(process.env.PORT || 8787);
-const server = createServer({ "/api/ingest": ingest });
+registerProcessMetrics(metrics);
+const server = createServer({ "/api/ingest": ingest }, { metrics });
 
 server.listen(port, () => {
   console.info(`ingest: listening on :${port}`);

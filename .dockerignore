@@ -10,3 +10,4 @@
 !api/ingest.js
 !lib/ingest-core.mjs
 !lib/node-server.mjs
+!lib/metrics.mjs

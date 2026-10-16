@@ -105,6 +105,62 @@ services:
       - rest
       - ingest
 
+  # ---- Optional: monitoring --------------------------------------------------------------------
+  # Not started by a plain `docker compose up`. Opt in with:
+  #   docker compose --profile monitoring up -d --wait
+  #   open http://localhost:3001     # Grafana: the "DevInsight — ingest service" dashboard
+  # Prometheus scrapes ingest:8787/metrics over the internal network; neither /metrics nor
+  # Prometheus is reachable through the public gateway.
+
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    profiles: [monitoring]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./docker/monitoring/prometheus:/etc/prometheus:ro
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      - ingest
+
+  grafana:
+    image: grafana/grafana:13.2.4@sha256:dbbc38ea21103cefb50396340cd88afec779c7e070b0a7bf5a75b4ce46651d3f
+    profiles: [monitoring]
+    environment:
+      # Read-only and login-free: anyone who can reach 127.0.0.1:3001 can view the dashboards and
+      # nobody can log in to change them. Hiding the login form is not enough on its own — Grafana
+      # still accepted its built-in admin/admin over the HTTP API (checked) — so the default admin
+      # account is never created and password auth on the API is off too.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_BASIC_ENABLED: "false"
+      GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ingest.json
+      # No phoning home from a local development tool.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+    volumes:
+      - ./docker/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      - prometheus
+
 volumes:
   db-data:
   keys:
