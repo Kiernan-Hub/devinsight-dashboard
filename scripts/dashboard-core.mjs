@@ -190,3 +190,80 @@ export function defaultBaseline(versions, { current, declaredBaseline } = {}) {
   }
   return versions.find(version => version !== current) ?? "";
 }
+
+// ---------------------------------------------------------------------------------------------
+// Session explorer
+// ---------------------------------------------------------------------------------------------
+
+export const SESSION_LIST_LIMIT = 20;
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// A session id arrives from the page URL (?session=...) as well as from the database, so it is
+// untrusted. PostgREST filters live in the query string; an id like "x&select=*" would otherwise
+// rewrite the query. Anything that is not exactly a UUID is refused before it gets near one.
+export function isSessionId(value) {
+  return typeof value === "string" && SESSION_ID_RE.test(value);
+}
+
+export function sessionListPath(buildVersion = "all", limit = SESSION_LIST_LIMIT) {
+  const buildFilter = buildVersion === "all" ? "" : `&build_version=eq.${encodeURIComponent(buildVersion)}`;
+  return "/rest/v1/session_summary?select=id,build_version,platform,started_at,duration_seconds,sample_count,avg_fps,worst_frame_time_ms,outcome" +
+    `${buildFilter}&order=started_at.desc&limit=${limit}`;
+}
+
+export function sessionDetailPaths(sessionId) {
+  if (!isSessionId(sessionId)) throw new Error("not a session id");
+  const id = encodeURIComponent(sessionId.toLowerCase());
+  return {
+    // Its own summary row, so a shared link to a session older than the visible list still
+    // knows its build and outcome.
+    summary: `/rest/v1/session_summary?select=id,build_version,platform,started_at,duration_seconds,sample_count,avg_fps,worst_frame_time_ms,outcome&id=eq.${id}`,
+    samples: `/rest/v1/system_logs?select=created_at,fps_rate,frame_time_p95_ms,frame_time_max_ms,height,platform_count&session_id=eq.${id}&order=created_at.asc&limit=${LOG_QUERY_LIMIT}`,
+    events: `/rest/v1/gameplay_events?select=created_at,event_type,height,detail&session_id=eq.${id}&order=created_at.asc&limit=500`
+  };
+}
+
+export function formatDuration(seconds) {
+  const total = Number(seconds);
+  if (seconds == null || !Number.isFinite(total) || total < 0) return "—";
+  const s = Math.round(total);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+}
+
+// session_summary's outcome vocabulary, as the table shows it. Unknown values (a future view
+// change, or a value this page has never heard of) render as themselves, never as "clean".
+export function outcomeLabel(outcome) {
+  const labels = {
+    clean: { text: "Clean exit", tone: "good" },
+    active: { text: "Still running", tone: "live" },
+    ended_unclean: { text: "Ended unclean", tone: "bad" },
+    abandoned: { text: "Abandoned", tone: "warn" }
+  };
+  return labels[outcome] ?? { text: String(outcome ?? "unknown"), tone: "" };
+}
+
+// Pins each gameplay event to the sample it happened during, so a death can be drawn on the
+// frame-time chart at the point where it occurred: the last sample at or before the event, or
+// the first sample if the event came before any (a run_start usually does). Samples must be in
+// ascending time order, as sessionDetailPaths() asks for them.
+export function placeEvents(samples, events) {
+  if (!samples.length || !events?.length) return [];
+  const times = samples.map(sample => Date.parse(sample.created_at));
+  return events.map(event => {
+    const at = Date.parse(event.created_at);
+    let index = 0;
+    while (index + 1 < times.length && times[index + 1] <= at) index += 1;
+    const cause = event.detail && typeof event.detail.cause === "string" ? event.detail.cause.slice(0, 20) : null;
+    const kind = event.detail && typeof event.detail.kind === "string" ? event.detail.kind.slice(0, 20) : null;
+    const names = { run_start: "Start", run_end: "End", death: "Death", powerup: "Powerup", checkpoint: "Checkpoint" };
+    const name = names[event.event_type] ?? String(event.event_type).slice(0, 20);
+    return {
+      index,
+      type: event.event_type,
+      label: cause ? `${name} (${cause})` : kind ? `${name} (${kind})` : name,
+      height: event.height == null ? null : Number(event.height)
+    };
+  });
+}

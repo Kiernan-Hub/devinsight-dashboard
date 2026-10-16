@@ -206,6 +206,22 @@ fine. `build_session_health` rolls that up per build into a crash/abandon rate, 
 dashboard as **Build stability** — a sample count travels with the percentage, since 100%
 unhealthy out of one concluded session is a very different claim from 100% out of two hundred.
 
+### Session explorer
+
+Every other panel aggregates: per build, per height band, per time window. That answers "is this
+build worse?" but not "what happened in *that* run?". The **Sessions** panel lists the most recent
+play sessions with their outcome, and clicking one opens its own timeline — frame time (P95 and
+worst frame, on a logarithmic axis so one 800 ms stutter does not flatten everything else), height
+climbed, and the run's gameplay events drawn where they happened. A frame-time cliff followed by a
+death marker is a bug report with a timestamp. The open session lives in the URL, so it can be
+shared as a link.
+
+The session id in that URL is untrusted input, and PostgREST filters are query-string syntax, so
+it must be exactly a UUID before it is used in any request (an id like `x&select=*` would
+otherwise rewrite the query). A concluded session is fetched once; a session still running
+refreshes with the rest of the dashboard. Like the other optional panels it hides itself, rather
+than erroring, on a database without the views it reads.
+
 ### Environment variables
 
 | Variable | Where | Purpose |
@@ -395,7 +411,7 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 82 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator and demo seed
+npm test           # 87 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator and demo seed
 npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
 ```
 
@@ -430,6 +446,9 @@ deterministic in-browser dataset containing two builds, FPS drops, and a memory 
    unhealthy), 0.3.0 reads amber (8.2%), and 0.5.0 shows **—** with "no concluded sessions yet"
    rather than a misleading 0%, since its one session is still active. This panel degrades the
    same way as Performance by height — hidden, not an error, before the migration lands.
+9. The **Sessions** panel lists five sessions. Clicking the 0.4.0 "Ended unclean" one opens its
+   timeline: frame time climbing with height, checkpoint markers, and a death marker at the end.
+   The URL gains `&session=<id>`; reloading it reopens the same session, and **Close** removes it.
 
 Chart.js is checked into `vendor/` so the dashboard and demo remain testable when a CDN is
 unavailable. Production mode remains the default; the demo dataset is only enabled by the

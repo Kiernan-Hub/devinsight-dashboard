@@ -2,6 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   defaultBaseline,
+  formatDuration,
+  isSessionId,
+  outcomeLabel,
+  placeEvents,
+  sessionDetailPaths,
+  sessionListPath,
   compareBuilds,
   detectEvents,
   logsPath,
@@ -170,4 +176,51 @@ test("baseline falls back sensibly when the declared one has no data", () => {
   assert.equal(defaultBaseline(["0.6.0", "0.5.0"], { current: "0.6.0", declaredBaseline: "0.3.0" }), "0.5.0");
   assert.equal(defaultBaseline(["0.6.0"], { current: "0.6.0", declaredBaseline: "0.3.0" }), "", "one build: nothing to compare");
   assert.equal(defaultBaseline(["0.6.0", "0.5.0"], { current: "0.6.0", declaredBaseline: "0.6.0" }), "0.5.0", "a manifest naming the current build as its own baseline is ignored");
+});
+
+const SESSION = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+test("session ids from the URL are refused unless they are exactly a UUID", () => {
+  assert.equal(isSessionId(SESSION), true);
+  for (const hostile of ["", "abc", `${SESSION}&select=*`, `${SESSION} `, null, 42]) {
+    assert.equal(isSessionId(hostile), false, String(hostile));
+  }
+  assert.throws(() => sessionDetailPaths("x&select=*"), /not a session id/);
+});
+
+test("session queries are scoped to one session and ask for time order", () => {
+  const { summary, samples, events } = sessionDetailPaths(SESSION.toUpperCase());
+  assert.match(summary, new RegExp(`/session_summary\\?.*&id=eq\\.${SESSION}$`));
+  assert.match(samples, new RegExp(`session_id=eq\\.${SESSION}&order=created_at\\.asc`));
+  assert.match(events, /^\/rest\/v1\/gameplay_events\?/);
+  assert.match(sessionListPath("0.6.0 beta"), /build_version=eq\.0\.6\.0%20beta&order=started_at\.desc&limit=20$/);
+  assert.doesNotMatch(sessionListPath(), /build_version=eq\./, "no filter for all builds");
+});
+
+test("durations read naturally and absent ones say so", () => {
+  assert.equal(formatDuration(42.4), "42s");
+  assert.equal(formatDuration(252), "4m 12s");
+  assert.equal(formatDuration(3725), "1h 02m");
+  assert.equal(formatDuration(null), "—");
+  assert.equal(formatDuration("nope"), "—");
+});
+
+test("an unknown outcome is shown as itself, never as a clean exit", () => {
+  assert.equal(outcomeLabel("ended_unclean").tone, "bad");
+  assert.deepEqual(outcomeLabel("exploded"), { text: "exploded", tone: "" });
+});
+
+test("events are pinned to the sample they happened during", () => {
+  const samples = ["12:00:05", "12:00:10", "12:00:15"].map(t => ({ created_at: `2026-10-16T${t}Z` }));
+  const placed = placeEvents(samples, [
+    { created_at: "2026-10-16T12:00:00Z", event_type: "run_start" },
+    { created_at: "2026-10-16T12:00:12Z", event_type: "death", height: "1710.5", detail: { cause: "lava" } },
+    { created_at: "2026-10-16T12:09:00Z", event_type: "powerup", detail: { kind: "jetpack" } }
+  ]);
+  assert.deepEqual(placed.map(p => p.index), [0, 1, 2], "before the first sample, during, after the last");
+  assert.equal(placed[1].label, "Death (lava)");
+  assert.equal(placed[1].height, 1710.5);
+  assert.equal(placed[2].label, "Powerup (jetpack)");
+  assert.deepEqual(placeEvents([], [{ created_at: "x", event_type: "death" }]), []);
+  assert.deepEqual(placeEvents(samples, null), [], "events table missing (pre-migration database)");
 });
