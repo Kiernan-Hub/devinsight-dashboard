@@ -121,7 +121,14 @@ npm run benchmark:update-baseline  # run 3 trials, OVERWRITE the baseline — re
 
 ## The ingest API
 
-`POST /api/ingest` is the only way telemetry enters the database.
+`POST /api/ingest` is the only way telemetry enters the database. Its full contract — every
+field, limit, status code and the client's retry rules — is in [`openapi.json`](openapi.json)
+(OpenAPI 3.1), rendered at [`/docs/api.html`](docs/api.html). The document cannot quietly drift
+from the code: [`lib/openapi.test.mjs`](lib/openapi.test.mjs) probes the real validator with every
+documented bound (accepted at the edge, rejected just past it), compares documented patterns to the
+validator's own, requires the documented example to be accepted in full, and reads the handler's
+source to check that the documented status codes are exactly the ones it can send. Changing a
+limit in one place and not the other fails `npm test`; Redocly lints the document itself in CI.
 
 ```json
 {
@@ -417,7 +424,7 @@ Five workflows run on every push and pull request to `main`:
 | [`perf-gate.yml`](.github/workflows/perf-gate.yml) | Unit tests (Node + Godot), and the real-telemetry FPS regression gate; on `main`, opens and closes alert issues (below) |
 | [`benchmark-gate.yml`](.github/workflows/benchmark-gate.yml) | The headless benchmark has not regressed against the committed baseline; the numbers are posted on the pull request as one comment, edited on each push |
 | [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself; the FPS gate, run against seeded data with a deliberate ~25% regression, catches it. On `main`, publishes the image that just passed |
-| [`lint.yml`](.github/workflows/lint.yml) | Biome (JavaScript correctness), actionlint (the workflows themselves), hadolint (the Dockerfile) |
+| [`lint.yml`](.github/workflows/lint.yml) | Biome (JavaScript correctness), actionlint (the workflows themselves), Redocly (the API description), hadolint (the Dockerfile) |
 | [`codeql.yml`](.github/workflows/codeql.yml) | GitHub's security analysis over the JavaScript *and* the workflows (also weekly) |
 
 A merge to `main` publishes `ghcr.io/<owner>/devinsight-ingest`, tagged `sha-<commit>` so every
@@ -485,7 +492,7 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 115 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed, alerting and metrics format
+npm test           # 122 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator, demo seed, alerting and metrics format
 npm run test:godot # 60 checks: queue, context provider, events, sample numbering, and the benchmark's pure decision logic
 ```
 

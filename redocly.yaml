@@ -1,0 +1,7 @@
+# Redocly lints openapi.json in CI (lint.yml): the recommended rules, with one exception.
+extends:
+  - recommended
+rules:
+  # Flags localhost server URLs as leftover placeholders. Here it is real: the local Docker stack
+  # (docker compose up) serves this exact API at http://localhost:8080.
+  no-server-example.com: off

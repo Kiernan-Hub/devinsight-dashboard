@@ -1,6 +1,6 @@
 name: Lint
 
-# Three linters, each aimed at a kind of file this repository actually has and has actually
+# Four linters, each aimed at a kind of file this repository actually has and has actually
 # needed checking. All run from pinned container images, so the repository itself keeps zero npm
 # dependencies, no node_modules and no lockfile.
 
@@ -40,6 +40,11 @@ jobs:
       # when that exact path runs — for a publish-on-main job, after the merge.
       - name: actionlint (GitHub Actions workflows)
         run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      # The API description (openapi.json): valid OpenAPI 3.1, plus Redocly's recommended rules.
+      # Whether it is *true* — matches the code — is lib/openapi.test.mjs's job, in npm test.
+      - name: Redocly (OpenAPI description)
+        run: docker run --rm -v "$PWD:/spec" -w /spec redocly/cli:2.55.0@sha256:224477ac49f5e8fdfd3f244d30ed1db9d74f57263a46117a09d5894f6751a2a0 lint openapi.json
 
       # Dockerfile: unpinned base images, running as root, shell-form CMD, and similar.
       - name: hadolint (Dockerfile)

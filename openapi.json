@@ -1,0 +1,477 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "DevInsight telemetry ingest",
+    "version": "0.7.0",
+    "description": "The only way telemetry from the Godot game Ascent enters the database.\n\n**Retry contract.** The client's offline queue decides what to do from the status code alone: **2xx** \u2014 done, clear it from the queue (including partially rejected batches and duplicates); **4xx** \u2014 the server will judge this payload the same way every time, so drop it rather than retry forever; **5xx** \u2014 the server or database failed, keep it and retry. Every response below is chosen to keep that contract true.\n\n**Exactly once.** With per-session `seq` numbers (logger 0.7.0+), retrying a batch that was already stored is harmless: it is skipped and reported in `duplicates`.\n\nThis document is checked against the code in `lib/openapi.test.mjs`: every limit, enum and status code here is probed against the real validator and handler.",
+    "license": {
+      "name": "Project source",
+      "url": "https://github.com/Kiernan-Hub/devinsight-dashboard"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://devinsight-dashboard-delta.vercel.app",
+      "description": "Production (Vercel)"
+    },
+    {
+      "url": "http://localhost:8080",
+      "description": "Local Docker stack (docker compose up)"
+    }
+  ],
+  "security": [
+    {
+      "IngestToken": []
+    },
+    {}
+  ],
+  "paths": {
+    "/api/ingest": {
+      "post": {
+        "operationId": "ingestTelemetry",
+        "summary": "Record a batch of samples and events for one play session",
+        "description": "Validates each sample and event independently: a malformed row is dropped and reported, and the rest of the batch is stored. The session, samples and events are written in a single database transaction.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              },
+              "examples": {
+                "backlog": {
+                  "summary": "Two queued samples and a death, from a 0.7.0 client",
+                  "value": {
+                    "session": {
+                      "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+                      "build_version": "0.7.0",
+                      "platform": "macOS"
+                    },
+                    "sent_at": "2026-10-16T12:00:05.120Z",
+                    "samples": [
+                      {
+                        "seq": 41,
+                        "created_at": "2026-10-16T11:59:55.004Z",
+                        "fps_rate": 61,
+                        "memory_used_mb": 92.4,
+                        "frame_time_p95_ms": 18.2,
+                        "frame_time_max_ms": 51.0,
+                        "frames_sampled": 305,
+                        "height": 4210.5,
+                        "platform_count": 182
+                      },
+                      {
+                        "seq": 42,
+                        "created_at": "2026-10-16T12:00:00.004Z",
+                        "fps_rate": 58,
+                        "memory_used_mb": 92.6,
+                        "frame_time_p95_ms": 19.9,
+                        "frame_time_max_ms": 88.4,
+                        "frames_sampled": 290,
+                        "height": 4290.0,
+                        "platform_count": 190
+                      }
+                    ],
+                    "events": [
+                      {
+                        "seq": 7,
+                        "event_type": "death",
+                        "created_at": "2026-10-16T12:00:01.500Z",
+                        "height": 4301.0,
+                        "detail": {
+                          "cause": "lava"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stored. Also returned when some rows were rejected or were duplicates \u2014 check `rejected` and `duplicates`. Partial acceptance is deliberate: failing a whole batch over one bad row would make it a poison pill the client retries forever.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request as a whole is unusable: not JSON, no valid session, samples not an array, or a malformed sent_at. Do not retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong X-Ingest-Token, when the server requires one. Do not retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Only POST is accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Allow": {
+                "schema": {
+                  "type": "string",
+                  "const": "POST"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Too large: more than 256 KB, or more than 200 samples or events. Do not retry as-is; split the batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The server is not configured (missing database settings).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The database write failed. Nothing from this request was stored (it is one transaction). Retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "IngestToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Ingest-Token",
+        "description": "Keeps casual traffic out. It ships inside the game binary, so it is not a secret and does not authorise anything beyond appending validated telemetry. Optional: a server without one configured accepts requests without it."
+      }
+    },
+    "schemas": {
+      "IngestRequest": {
+        "type": "object",
+        "required": [
+          "session",
+          "samples"
+        ],
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/Session"
+          },
+          "sent_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The client's clock at the moment it sent this request (logger 0.7.0+). The server never trusts the client's clock directly: it dates each sample as (server time) \u2212 (sent_at \u2212 created_at), so a player whose clock is hours wrong still gets correct timestamps."
+          },
+          "samples": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/Sample"
+            },
+            "description": "May be empty (e.g. the session-ended message)."
+          },
+          "events": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            }
+          }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "build_version"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "description": "One play session, generated by the client at launch."
+          },
+          "build_version": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._+-]{1,40}$",
+            "description": "The game build. Applied to every sample in the request: a sample never names its own build."
+          },
+          "platform": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9 ._()-]{1,60}$"
+          },
+          "ended": {
+            "type": "boolean",
+            "description": "Sent once, on a clean shutdown. A session that simply stops reporting is recorded as abandoned \u2014 a crash cannot announce itself."
+          },
+          "ended_cleanly": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Sample": {
+        "type": "object",
+        "required": [
+          "fps_rate",
+          "memory_used_mb"
+        ],
+        "additionalProperties": true,
+        "description": "One performance reading, normally covering 5 seconds of play. Unknown properties are ignored.",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Per-session sequence number, 0, 1, 2, ... (logger 0.7.0+). (session, seq) is stored at most once: a re-sent sample is skipped and counted in `duplicates`. Gaps are reported as `samples_lost`. Omit for older clients."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the sample was taken, by the client's clock. Corrected by `sent_at` (see the request). Without `sent_at` it is taken as-is; without either, the server's arrival time is used. After correction it must be no more than 5 minutes in the future and no more than 30 days old."
+          },
+          "fps_rate": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000,
+            "description": "Frames per second over the interval."
+          },
+          "memory_used_mb": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1048576,
+            "description": "Static memory in use, MB."
+          },
+          "frame_time_p95_ms": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60000,
+            "description": "95th-percentile frame time over every frame in the interval, ms."
+          },
+          "frame_time_max_ms": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 60000,
+            "description": "Worst single frame in the interval, ms."
+          },
+          "frames_sampled": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000,
+            "description": "How many frames the timings were measured over."
+          },
+          "app_name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9 ._-]{1,60}$",
+            "default": "Ascent"
+          },
+          "session_notes": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "height": {
+            "type": "number",
+            "minimum": -1000000,
+            "maximum": 1000000,
+            "description": "Gameplay context: height climbed."
+          },
+          "platform_count": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "Gameplay context: live platforms (rounded to an integer)."
+          },
+          "entity_count": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000,
+            "description": "Gameplay context: live nodes (rounded to an integer)."
+          },
+          "lava_speed": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100000,
+            "description": "Gameplay context: hazard speed."
+          }
+        }
+      },
+      "Event": {
+        "type": "object",
+        "required": [
+          "event_type"
+        ],
+        "additionalProperties": true,
+        "description": "Something that happened, as opposed to a periodic reading.",
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2147483647,
+            "description": "Per-session event number, counted separately from samples. Same exactly-once rule."
+          },
+          "event_type": {
+            "type": "string",
+            "enum": [
+              "run_start",
+              "run_end",
+              "death",
+              "powerup",
+              "checkpoint"
+            ],
+            "description": "A closed vocabulary: an unknown type is rejected rather than stored where no query looks."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it happened, by the client's clock; corrected by `sent_at` like samples."
+          },
+          "height": {
+            "type": "number",
+            "minimum": -1000000,
+            "maximum": 1000000,
+            "description": "Height at which it happened."
+          },
+          "detail": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Free-form context, e.g. {\"cause\": \"lava\"}. Must serialise to under 1000 characters."
+          }
+        }
+      },
+      "IngestResult": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "accepted",
+          "accepted_events",
+          "duplicates",
+          "duplicate_events",
+          "rejected",
+          "clock_offset_ms",
+          "limits"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "accepted": {
+            "type": "integer",
+            "description": "Samples that passed validation (stored now, or already stored \u2014 see duplicates)."
+          },
+          "accepted_events": {
+            "type": "integer"
+          },
+          "duplicates": {
+            "type": "integer",
+            "description": "Accepted samples whose (session, seq) was already stored by an earlier attempt. Not an error: a retry after a lost response."
+          },
+          "duplicate_events": {
+            "type": "integer"
+          },
+          "rejected": {
+            "type": "integer",
+            "description": "Rows dropped by validation. The rest of the batch is still stored."
+          },
+          "rejections": {
+            "type": "array",
+            "maxItems": 10,
+            "description": "Present only when something was rejected; the first ten.",
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "index",
+                "reason"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "sample",
+                    "event"
+                  ]
+                },
+                "index": {
+                  "type": "integer",
+                  "description": "Position in the request's samples or events array."
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "clock_offset_ms": {
+            "type": "integer",
+            "description": "Server time minus client time, measured from sent_at. Already applied to the stored timestamps; reported so a badly-set clock is visible."
+          },
+          "limits": {
+            "type": "object",
+            "required": [
+              "max_samples_per_request",
+              "max_events_per_request"
+            ],
+            "properties": {
+              "max_samples_per_request": {
+                "type": "integer"
+              },
+              "max_events_per_request": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
