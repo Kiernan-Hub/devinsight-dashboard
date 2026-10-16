@@ -170,3 +170,23 @@ export function logsPath(rangeMinutes, buildVersion = "all", limit = LOG_QUERY_L
   const buildFilter = buildVersion === "all" ? "" : `&build_version=eq.${encodeURIComponent(buildVersion)}`;
   return `/rest/v1/system_logs?select=*&created_at=gte.${encodeURIComponent(since)}${buildFilter}&order=created_at.desc&limit=${limit}`;
 }
+
+// Which build the comparison dropdown starts on.
+//
+// The manifest's declared baseline comes first, because that is what the CI gate compares
+// against: a dashboard reading "warning" for the same build the gate fails as a regression is
+// how a regression gets waved through. Failing that, the most recently seen build that is not
+// the current one. Never the current build itself — a build compared with itself always reads
+// "+0.0%, healthy".
+//
+// This used to be "the second most recently seen build", the same ordering bug the current-build
+// side was fixed for in the September audit: playing an old build once moved it to the front of
+// the list, pushed the current build into second place, and the dashboard then compared the
+// current build against itself. Found by seeding three builds into the local Docker stack and
+// replaying one sample from the oldest.
+export function defaultBaseline(versions, { current, declaredBaseline } = {}) {
+  if (declaredBaseline && declaredBaseline !== current && versions.includes(declaredBaseline)) {
+    return declaredBaseline;
+  }
+  return versions.find(version => version !== current) ?? "";
+}

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  defaultBaseline,
   compareBuilds,
   detectEvents,
   logsPath,
@@ -149,4 +150,24 @@ test("the gate compares the declared builds, not whichever was seen most recentl
   });
   assert.equal(forwards.status, "regression");
   assert.equal(backwards.status, "healthy");
+});
+
+test("the comparison defaults to the manifest's baseline, the build the CI gate uses", () => {
+  // Newest-seen first, the order build_fps_summary is fetched in.
+  const versions = ["0.6.0", "0.5.0", "0.3.0"];
+  assert.equal(defaultBaseline(versions, { current: "0.6.0", declaredBaseline: "0.3.0" }), "0.3.0");
+});
+
+test("replaying an old build never makes the current build its own baseline", () => {
+  // Someone played 0.3.0 most recently, so it jumped to the front. The old default — "the
+  // second most recent" — picked 0.6.0 here and showed the current build at +0.0% vs itself.
+  const versions = ["0.3.0", "0.6.0", "0.5.0"];
+  assert.equal(defaultBaseline(versions, { current: "0.6.0", declaredBaseline: "0.3.0" }), "0.3.0");
+  assert.equal(defaultBaseline(versions, { current: "0.6.0" }), "0.3.0", "without a manifest: any build but the current one");
+});
+
+test("baseline falls back sensibly when the declared one has no data", () => {
+  assert.equal(defaultBaseline(["0.6.0", "0.5.0"], { current: "0.6.0", declaredBaseline: "0.3.0" }), "0.5.0");
+  assert.equal(defaultBaseline(["0.6.0"], { current: "0.6.0", declaredBaseline: "0.3.0" }), "", "one build: nothing to compare");
+  assert.equal(defaultBaseline(["0.6.0", "0.5.0"], { current: "0.6.0", declaredBaseline: "0.6.0" }), "0.5.0", "a manifest naming the current build as its own baseline is ignored");
 });

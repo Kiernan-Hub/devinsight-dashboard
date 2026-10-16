@@ -370,7 +370,7 @@
   </main>
 
   <script type="module">
-    import { compareBuilds, detectEvents, logsPath, summarizeLogs, LOG_QUERY_LIMIT } from "./scripts/dashboard-core.mjs";
+    import { compareBuilds, defaultBaseline, detectEvents, logsPath, summarizeLogs, LOG_QUERY_LIMIT } from "./scripts/dashboard-core.mjs";
     // Supabase in production; the local Docker stack serves its own config.js at the same path.
     import { SUPABASE_URL, SUPABASE_ANON_KEY, ENVIRONMENT } from "./config.js";
     // No key means the local stack: PostgREST treats a request without one as the anon role.
@@ -854,7 +854,11 @@
       const baseline = $("baselineBuild");
       const currentBaseline = baseline.value;
       baseline.replaceChildren(...versions.map(v => option(v, v)));
-      baseline.value = versions.includes(currentBaseline) ? currentBaseline : (versions[1] ?? versions[0] ?? "");
+      // The same "current build" renderBuild() uses when no filter is set: the manifest's, if it has data.
+      const current = manifest && versions.includes(manifest.build_version) ? manifest.build_version : versions[0];
+      baseline.value = versions.includes(currentBaseline)
+        ? currentBaseline
+        : defaultBaseline(versions, { current, declaredBaseline: manifest?.baseline_version });
     }
 
     function showNotice(message, type = "error") {
