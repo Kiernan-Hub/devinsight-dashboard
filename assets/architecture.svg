@@ -1,4 +1,4 @@
-<svg viewBox="0 0 980 580" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ascent telemetry pipeline: the Godot client sends live FPS readings to Supabase every 5 seconds; on send failure it queues them to a local JSON file instead of dropping them, then bulk-flushes that queue back to Supabase over its own connection on reconnect, independent of live sends. Supabase feeds both a live Chart.js dashboard and a GitHub Actions CI gate that fails the build if average FPS regresses more than 10% versus the prior build_version.">
+<svg viewBox="0 0 1130 650" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Ascent telemetry pipeline. The Godot client sends a numbered, timestamped sample every 5 seconds to POST /api/ingest; on failure it keeps the sample in an on-disk queue and retries later with the same sequence number, so it is stored once. The ingest API (a Vercel Function in production, the same file in a Docker image locally) validates the batch and writes it with one transactional database call, ingest_batch, into Postgres (Supabase in production). The dashboard reads views from Postgres with the public key, which is read-only. The FPS regression gate in GitHub Actions reads the same views and turns its verdict on main into GitHub issues. Prometheus and Grafana scrape the ingest service's metrics. Every pull request also runs unit and Godot tests, a whole-stack Docker smoke test, a headless benchmark, linters and CodeQL; merges to main publish the image to GHCR.">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
@@ -10,66 +10,118 @@
 
   <style>
     .box { fill: #ffffff; stroke: #334155; stroke-width: 1.5; }
+    .box-accent { fill: #fffbeb; stroke: #b45309; stroke-width: 1.5; }
+    .box-quiet { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.2; stroke-dasharray: 4 3; }
     .label { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 14px; fill: #1e293b; font-weight: 600; }
     .sublabel { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #475569; }
+    .mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; fill: #475569; }
     .arrowlabel { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #475569; }
     .arrowlabel-accent { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11.5px; fill: #b45309; font-weight: 600; }
     .edge { stroke: #475569; stroke-width: 1.5; fill: none; }
-    .edge-accent { stroke: #b45309; stroke-width: 2; fill: none; }
+    .edge-accent { stroke: #b45309; stroke-width: 1.8; fill: none; }
+    .edge-retry { stroke: #b45309; stroke-width: 1.5; fill: none; stroke-dasharray: 5 4; }
+    .strip-title { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 12px; fill: #1e293b; font-weight: 600; }
   </style>
 
+  <rect width="1130" height="650" fill="#ffffff"/>
+
   <!-- Godot client -->
-  <rect class="box" x="30" y="215" width="180" height="80" rx="6"/>
-  <text class="label" x="120" y="248" text-anchor="middle">Godot Client</text>
-  <text class="sublabel" x="120" y="266" text-anchor="middle">system_logger.gd</text>
-  <text class="sublabel" x="120" y="281" text-anchor="middle">reads FPS every 5s</text>
+  <rect class="box" x="30" y="50" width="250" height="120" rx="8"/>
+  <text class="label" x="155" y="80" text-anchor="middle">Godot client (Ascent)</text>
+  <text class="mono" x="155" y="102" text-anchor="middle">system_logger.gd 0.7.0</text>
+  <text class="sublabel" x="155" y="124" text-anchor="middle">a sample every 5 s: frame times,</text>
+  <text class="sublabel" x="155" y="140" text-anchor="middle">memory, height, platform count</text>
+  <text class="sublabel" x="155" y="156" text-anchor="middle">numbered (seq) and timestamped</text>
 
-  <!-- Local queue -->
-  <rect class="box" x="170" y="420" width="200" height="80" rx="6"/>
-  <text class="label" x="270" y="453" text-anchor="middle">log_queue.json</text>
-  <text class="sublabel" x="270" y="471" text-anchor="middle">local disk, on-device</text>
-  <text class="sublabel" x="270" y="486" text-anchor="middle">survives app restart</text>
+  <!-- Offline queue -->
+  <rect class="box" x="30" y="250" width="250" height="80" rx="8"/>
+  <text class="label" x="155" y="279" text-anchor="middle">Offline queue</text>
+  <text class="mono" x="155" y="299" text-anchor="middle">user://log_queue.json</text>
+  <text class="sublabel" x="155" y="317" text-anchor="middle">on disk · survives game restarts</text>
 
-  <!-- Supabase -->
-  <rect class="box" x="420" y="215" width="200" height="80" rx="6"/>
-  <text class="label" x="520" y="245" text-anchor="middle">Supabase</text>
-  <text class="sublabel" x="520" y="263" text-anchor="middle">Postgres + REST</text>
-  <text class="sublabel" x="520" y="278" text-anchor="middle">RLS-locked anon key, insert/select only</text>
+  <!-- Ingest API -->
+  <rect class="box-accent" x="400" y="50" width="270" height="120" rx="8"/>
+  <text class="label" x="535" y="80" text-anchor="middle">Ingest API</text>
+  <text class="mono" x="535" y="102" text-anchor="middle">POST /api/ingest · api/ingest.js</text>
+  <text class="sublabel" x="535" y="124" text-anchor="middle">Vercel Function in production;</text>
+  <text class="sublabel" x="535" y="140" text-anchor="middle">the same file in the Docker image</text>
+  <text class="sublabel" x="535" y="156" text-anchor="middle">validates each row · corrects clock skew</text>
+
+  <!-- Postgres -->
+  <rect class="box" x="820" y="50" width="270" height="140" rx="8"/>
+  <text class="label" x="955" y="80" text-anchor="middle">Postgres</text>
+  <text class="sublabel" x="955" y="100" text-anchor="middle">Supabase in production · Docker locally</text>
+  <text class="sublabel" x="955" y="124" text-anchor="middle">sessions · samples · gameplay events</text>
+  <text class="sublabel" x="955" y="146" text-anchor="middle">unique (session_id, seq): stored once</text>
+  <text class="sublabel" x="955" y="164" text-anchor="middle">public key: SELECT only, RLS on</text>
+  <text class="sublabel" x="955" y="180" text-anchor="middle">views per build, height band, session</text>
+
+  <!-- Monitoring -->
+  <rect class="box-quiet" x="400" y="250" width="270" height="80" rx="8"/>
+  <text class="label" x="535" y="279" text-anchor="middle">Prometheus + Grafana</text>
+  <text class="sublabel" x="535" y="299" text-anchor="middle">optional Compose profile</text>
+  <text class="sublabel" x="535" y="317" text-anchor="middle">latency · stored, rejected, duplicate rows</text>
 
   <!-- Dashboard -->
-  <rect class="box" x="730" y="60" width="220" height="80" rx="6"/>
-  <text class="label" x="840" y="93" text-anchor="middle">index.html Dashboard</text>
-  <text class="sublabel" x="840" y="111" text-anchor="middle">Chart.js, static, on Vercel</text>
-  <text class="sublabel" x="840" y="126" text-anchor="middle">polls Supabase REST for new rows</text>
+  <rect class="box" x="820" y="270" width="270" height="90" rx="8"/>
+  <text class="label" x="955" y="299" text-anchor="middle">Dashboard</text>
+  <text class="mono" x="955" y="319" text-anchor="middle">index.html · Chart.js</text>
+  <text class="sublabel" x="955" y="339" text-anchor="middle">FPS, frame time, height, stability,</text>
+  <text class="sublabel" x="955" y="353" text-anchor="middle">session explorer</text>
 
-  <!-- CI gate -->
-  <rect class="box" x="730" y="390" width="220" height="110" rx="6"/>
-  <text class="label" x="840" y="418" text-anchor="middle">GitHub Actions</text>
-  <text class="sublabel" x="840" y="436" text-anchor="middle">perf-gate.yml</text>
-  <text class="sublabel" x="840" y="454" text-anchor="middle">compares avg FPS: build_version N</text>
-  <text class="sublabel" x="840" y="469" text-anchor="middle">vs N-1, via build_fps_summary view</text>
-  <text class="sublabel" x="840" y="486" text-anchor="middle">fails CI on &gt;10% regression</text>
+  <!-- FPS gate -->
+  <rect class="box" x="820" y="430" width="270" height="90" rx="8"/>
+  <text class="label" x="955" y="459" text-anchor="middle">FPS regression gate</text>
+  <text class="mono" x="955" y="479" text-anchor="middle">perf-gate.yml · build-manifest.json</text>
+  <text class="sublabel" x="955" y="497" text-anchor="middle">declared build vs declared baseline;</text>
+  <text class="sublabel" x="955" y="511" text-anchor="middle">fails CI over a 10% FPS regression</text>
 
-  <!-- Godot -> Supabase: live send -->
-  <line class="edge" x1="210" y1="240" x2="418" y2="240" marker-end="url(#arrow)"/>
-  <text class="arrowlabel" x="314" y="230" text-anchor="middle">POST reading (live send)</text>
+  <!-- Alerts -->
+  <rect class="box" x="400" y="430" width="270" height="90" rx="8"/>
+  <text class="label" x="535" y="459" text-anchor="middle">GitHub issues</text>
+  <text class="sublabel" x="535" y="479" text-anchor="middle">"Performance regression" and</text>
+  <text class="sublabel" x="535" y="495" text-anchor="middle">"gate cannot run" — opened once,</text>
+  <text class="sublabel" x="535" y="511" text-anchor="middle">closed automatically on recovery</text>
 
-  <!-- Godot -> Queue: on failure -->
-  <path class="edge" d="M 100 295 L 100 400 Q 100 420 120 420 L 168 448" marker-end="url(#arrow)"/>
-  <text class="arrowlabel" x="60" y="360" text-anchor="middle">on send</text>
-  <text class="arrowlabel" x="60" y="374" text-anchor="middle">failure</text>
+  <!-- client -> ingest -->
+  <line class="edge-accent" x1="280" y1="100" x2="396" y2="100" marker-end="url(#arrow-accent)"/>
+  <text class="arrowlabel-accent" x="338" y="90" text-anchor="middle">POST</text>
+  <text class="arrowlabel" x="338" y="119" text-anchor="middle">seq + sent_at</text>
 
-  <!-- Queue -> Supabase: bulk flush, own connection (the differentiator) -->
-  <path class="edge-accent" d="M 370 445 Q 470 500 520 445 L 520 297" marker-end="url(#arrow-accent)"/>
-  <text class="arrowlabel-accent" x="470" y="530" text-anchor="middle">bulk flush on reconnect</text>
-  <text class="arrowlabel-accent" x="470" y="545" text-anchor="middle">own HTTPRequest — independent of live sends</text>
+  <!-- client -> queue -->
+  <line class="edge" x1="155" y1="170" x2="155" y2="246" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="145" y="205" text-anchor="end">on failure:</text>
+  <text class="arrowlabel" x="145" y="220" text-anchor="end">keep it</text>
 
-  <!-- Supabase -> Dashboard -->
-  <line class="edge" x1="600" y1="215" x2="760" y2="142" marker-end="url(#arrow)"/>
-  <text class="arrowlabel" x="710" y="170" text-anchor="middle">reads via REST</text>
+  <!-- queue -> ingest (retry) -->
+  <path class="edge-retry" d="M280,290 L345,290 L345,140 L396,140" marker-end="url(#arrow-accent)"/>
+  <text class="arrowlabel-accent" x="352" y="205">retry, same seq:</text>
+  <text class="arrowlabel-accent" x="352" y="220">stored once</text>
 
-  <!-- Supabase -> CI -->
-  <line class="edge" x1="600" y1="295" x2="760" y2="388" marker-end="url(#arrow)"/>
-  <text class="arrowlabel" x="710" y="352" text-anchor="middle">queries per build_version</text>
+  <!-- ingest -> postgres -->
+  <line class="edge-accent" x1="670" y1="100" x2="816" y2="100" marker-end="url(#arrow-accent)"/>
+  <text class="arrowlabel-accent" x="743" y="90" text-anchor="middle">ingest_batch()</text>
+  <text class="arrowlabel" x="743" y="119" text-anchor="middle">one transaction</text>
 
+  <!-- prometheus -> ingest -->
+  <line class="edge" x1="560" y1="250" x2="560" y2="174" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="570" y="215">scrapes /metrics</text>
+
+  <!-- postgres -> dashboard -->
+  <line class="edge" x1="955" y1="190" x2="955" y2="266" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="945" y="225" text-anchor="end">reads views,</text>
+  <text class="arrowlabel" x="945" y="240" text-anchor="end">public key</text>
+
+  <!-- postgres -> gate (around the right) -->
+  <path class="edge" d="M1090,120 L1112,120 L1112,475 L1094,475" marker-end="url(#arrow)"/>
+
+  <!-- gate -> issues -->
+  <line class="edge" x1="820" y1="475" x2="674" y2="475" marker-end="url(#arrow)"/>
+  <text class="arrowlabel" x="747" y="465" text-anchor="middle">verdict on main</text>
+
+  <!-- CI strip -->
+  <rect class="box-quiet" x="30" y="565" width="1060" height="70" rx="8"/>
+  <text class="strip-title" x="50" y="590">Every pull request</text>
+  <text class="sublabel" x="50" y="610">Node and Godot unit tests · the whole stack in Docker against real Postgres: smoke test, privileges, schema re-applied, gate catches a seeded regression</text>
+  <text class="sublabel" x="50" y="624">Headless Godot benchmark, posted on the PR · Biome, actionlint, Redocly, hadolint · CodeQL · on main: image published to GHCR with provenance</text>
 </svg>

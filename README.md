@@ -9,7 +9,7 @@ and PR so a regression signal exists even before any human has played the build.
 **Pipeline:** Godot (`godot/system_logger.gd`) → `POST /api/ingest` (Vercel Function) → Supabase
 (Postgres) → `index.html` dashboard (Chart.js) → GitHub Actions performance gate on every push.
 
-<img src="assets/architecture.svg" alt="Ascent telemetry pipeline: Godot client sends live FPS readings to Supabase every 5 seconds; on send failure it queues them to a local JSON file and bulk-flushes that queue back to Supabase over its own connection on reconnect, independent of live sends. Supabase feeds both the live dashboard and a GitHub Actions CI gate that fails the build on >10% FPS regression.">
+<img src="assets/architecture.svg" alt="Architecture: the Godot client sends a numbered, timestamped sample every 5 seconds to POST /api/ingest, keeping it in an on-disk queue and retrying with the same sequence number if a send fails, so it is stored once. The ingest API (a Vercel Function in production, the same file in a Docker image locally) validates each row and writes the batch with one transactional call into Postgres. The dashboard reads views with the public, read-only key. The FPS regression gate in GitHub Actions reads the same views and turns its verdict on main into GitHub issues. Prometheus and Grafana scrape the ingest service. Every pull request runs unit tests, a whole-stack Docker smoke test, a headless benchmark, linters and CodeQL.">
 
 The dashboard supports 5-minute through 24-hour query windows, build filtering and baseline
 comparison, deploy/build markers, and a clickable performance-event timeline. Its headline
