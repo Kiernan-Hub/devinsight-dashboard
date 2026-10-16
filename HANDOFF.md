@@ -7,8 +7,10 @@ written here.
 
 ## Update 2026-10-16 — expansion phases 1–2 (read this first; the rest is the September history)
 
-Work since September lives on branch **`expansion/docker-and-ci`** — four commits on top of
-`5576fde`, **not pushed, no PR yet** (pushing is the user's call). The plan being followed is in
+Work since September lives on branch **`expansion/docker-and-ci`**, **pushed** to origin (user
+approved), **no PR opened yet** — `gh` is not logged in, so the user opens it from
+https://github.com/Kiernan-Hub/devinsight-dashboard/pull/new/expansion/docker-and-ci. Nothing in
+it has run on GitHub's runners yet; the first PR run is the real test of every workflow change. The plan being followed is in
 `INTERNSHIP_EXPANSION.md` (untracked on purpose: it has personal context). Kubernetes was
 considered and rejected by the user; Tier 3 items (Prometheus, queues, etc.) are deliberately later.
 
@@ -29,6 +31,18 @@ considered and rejected by the user; Tier 3 items (Prometheus, queues, etc.) are
   `codeql.yml` (JS + actions), `.github/dependabot.yml`. All workflows SHA-pinned, least
   privilege, Node 24. **Only verified by simulating the step scripts locally** — has never run on
   GitHub's runners. First push will be the real test.
+
+- **Later the same day** (user: "AWS not important, get in what we can"): `npm run seed`
+  (deterministic demo data through the real API; `e030a4a`), a dashboard bug it exposed — the
+  comparison defaulted to "second most recently seen build", so replaying an old build made the
+  current build its own baseline (`0216ec3`), a **session explorer** panel with shareable
+  `?session=` links (`1cfeda4`), the benchmark result posted as a PR comment from a separate
+  write-token job (`afb6998`), and **alert issues** for "regression" and "gate cannot run" on main,
+  plus a CI step proving the FPS gate catches the seeded regression (`8df7347`). 94 Node tests.
+- **Phase 3 (AWS/Terraform) is dropped by the user's choice**, not blocked. Don't restart it
+  unless they ask. Remaining Tier 3 ideas (Prometheus/Grafana, rate limiting, OpenAPI, load
+  testing) were deliberately not started — see the reasoning in the final summary of that session:
+  verify the CI on real runners first, and avoid keyword-stacking.
 
 **New blocker, more urgent than the old one:** the live Supabase project's hostname
 (`savgtraqvbqkbblhhhxe.supabase.co`) returns **NXDOMAIN** as of 2026-10-16. Most likely paused by
@@ -59,10 +73,24 @@ installed with `brew install colima docker docker-compose docker-buildx`. After 
   the migration.
 - In zsh, `path` is tied to `PATH` — never use it as a loop variable.
 
-**Next, in order:** (1) user restores Supabase; (2) with the user's OK, push the branch and open a
-PR so the new checks run for real — expect the FPS gate to be red until (1); (3) Phase 3
-(Terraform + AWS Lambda), which needs an AWS account on the **Free plan** (can't be charged;
-account closes after 6 months) and the user's explicit yes before any `terraform apply`.
+**What to expect once the PR is open:** Lint, CodeQL (×2), Docker (smoke + privileges + schema
+re-apply + gate self-test), Headless Benchmark (+ a PR comment), and the Node/Godot unit tests
+should pass; the **FPS regression gate will be red** until Supabase is restored (correct). After
+merge to main: the image publishes to GHCR, the `alert` job opens a **"Performance gate cannot
+run"** issue (correct — Supabase is down; it closes itself once the gate runs), and Dependabot
+starts opening grouped bump PRs.
+
+**Next, in order:** (1) user opens the PR; check runs via
+`curl https://api.github.com/repos/Kiernan-Hub/devinsight-dashboard/actions/runs?branch=expansion/docker-and-ci`
+and fix anything that only breaks on GitHub's runners (most likely suspects: compose `--wait` with
+the one-shot `keys` service on an older Compose, and the PR-comment job's `gh api` call);
+(2) user restores Supabase and runs `schema.sql` + `supabase/tests/privileges.sql`; (3) user
+toggles the GitHub settings in README's CI/CD section; (4) merge.
+
+**More gotchas from the second half:** Chart.js measures 0 px inside a hidden container (open the
+panel before creating the chart); the Browser pane can't screenshot while hidden — inspect via
+`Chart.getChart(canvas)` instead; heredoc outputs to `$GITHUB_OUTPUT` need a random delimiter when
+the content is PR-controlled.
 
 ## Where things stand right now (as of 2026-09-10)
 
@@ -229,8 +257,8 @@ again, that boundary was a deliberate choice, not an oversight.
 
 ## Test inventory
 
-As of 2026-10-16 (`e0042a7`): `npm test` is **72** Node tests (adds the Docker adapter and key
-generator); `npm run test:godot` unchanged at 52; with the stack up, `npm run smoke` (12 checks)
+As of 2026-10-16 (`8df7347`): `npm test` is **94** Node tests (adds the Docker adapter, key
+generator, demo seed, session explorer logic and alerting); `npm run test:godot` unchanged at 52; with the stack up, `npm run smoke` (12 checks)
 and `npm run test:db` (privilege/RLS invariants). The September inventory follows.
 
 ### As of `ce12d26`
