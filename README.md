@@ -272,6 +272,7 @@ Everything above, on one machine, with no Supabase or Vercel account:
 
 ```sh
 docker compose up --build --wait   # returns once every service reports healthy (~10 s)
+npm run seed                       # optional: ~3 hours of realistic demo telemetry, 3 builds
 open http://localhost:8080         # the dashboard, reading from the local database
 npm run smoke                      # sends real telemetry through it and reads it back
 docker compose down                # stop; add -v to also wipe the database
@@ -318,6 +319,17 @@ npm test               # also covers the adapter and key generator (no Docker ne
 npm run test:db        # privilege + RLS invariants, against the running local database
 npm run db:migrate:local  # re-apply schema.sql to the running database (it is idempotent)
 ```
+
+**Demo data.** [`scripts/seed.mjs`](scripts/seed.mjs) replays about three hours of play across
+three builds through the real `/api/ingest`, telling the story the dashboard exists to catch: the
+current build stops culling platforms past height 1500, so frame time climbs with height, average
+FPS falls 18% below the baseline, and half its sessions end badly. Every panel has something to
+show; pick the 24h range. It is deterministic, its requests are checked against the real ingest
+validation in `npm test`, and re-running replaces the previous seed rather than adding to it. One
+honest wrinkle: the API stamps session start and end times with the server's clock, on purpose,
+so replayed history would read as sessions that all started a moment ago. The seeder corrects
+only its own sessions' times afterwards with one SQL statement — an admin-only step the public
+API cannot do by design.
 
 The local game can point at `http://localhost:8080/api/ingest` instead of the Vercel URL in
 `system_logger.gd`. Set `INGEST_TOKEN` in a `.env` file (see [`.env.example`](.env.example)) to run
@@ -383,7 +395,7 @@ dashboard's data calculations are kept in a dependency-free module, and the same
 are:
 
 ```sh
-npm test           # 72 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter and key generator
+npm test           # 82 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter, key generator and demo seed
 npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
 ```
 
