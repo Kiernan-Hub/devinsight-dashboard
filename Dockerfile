@@ -21,10 +21,12 @@ COPY package.json server.mjs ./
 COPY api/ingest.js ./api/
 COPY lib/ingest-core.mjs lib/node-server.mjs ./lib/
 
-# The official Node image ships an unprivileged `node` user (uid 1000). Running as root inside
-# a container is not the same as root on the host, but it is one kernel bug away from it, and a
-# web server has no reason to need it.
-USER node
+# The official Node image ships an unprivileged `node` user, uid 1000. Running as root inside a
+# container is not the same as root on the host, but it is one kernel bug away from it, and a web
+# server has no reason to need it. Given as numbers rather than the name: a runtime can only
+# verify "this is not root" from a numeric id (Kubernetes' runAsNonRoot refuses a named user it
+# cannot resolve), and hadolint flags the named form for exactly that reason.
+USER 1000:1000
 
 ENV PORT=8787
 EXPOSE 8787

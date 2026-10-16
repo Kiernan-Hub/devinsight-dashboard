@@ -1,0 +1,46 @@
+name: Lint
+
+# Three linters, each aimed at a kind of file this repository actually has and has actually
+# needed checking. All run from pinned container images, so the repository itself keeps zero npm
+# dependencies, no node_modules and no lockfile.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # JavaScript: correctness and "suspicious" rules only (unused variables, undeclared
+      # globals, assignment inside a condition, unreachable code...). Formatting rules are off:
+      # the code already has a consistent hand-written style, and reformatting every file would
+      # bury real review signal under whitespace churn. Configuration: biome.json.
+      - name: Biome (JavaScript)
+        run: docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/biomejs/biome:2.5.15@sha256:e73b0563691da8c60ebfdb1553adea0c5d531752460e1672c1020d2d83a7e5d7 lint --error-on-warnings
+
+      # Workflows: catches broken ${{ }} expressions, unknown inputs, bad `needs:` references,
+      # and runs shellcheck over every `run:` block. A typo in a workflow otherwise surfaces only
+      # when that exact path runs — for a publish-on-main job, after the merge.
+      - name: actionlint (GitHub Actions workflows)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+      # Dockerfile: unpinned base images, running as root, shell-form CMD, and similar.
+      - name: hadolint (Dockerfile)
+        run: docker run --rm -i hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d < Dockerfile

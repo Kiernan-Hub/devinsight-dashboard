@@ -1,0 +1,33 @@
+# Dependabot opens pull requests to update pinned versions. Everything in this repository that
+# runs is pinned to an exact version — actions to commit SHAs, images to digests — which makes
+# builds reproducible and immune to a tag being re-pointed at malicious code. The cost of
+# pinning is that nothing updates by itself, security fixes included. This is what pays that
+# cost: each bump arrives as a reviewable PR that runs the full CI suite before anyone merges it.
+#
+# There is no npm entry: the repository has no npm dependencies.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # One PR for all action bumps, not one per action.
+      actions:
+        patterns: ["*"]
+
+  # The ingest image's base (Dockerfile).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Postgres, PostgREST, nginx and Node in the local stack (docker-compose.yml).
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      local-stack:
+        patterns: ["*"]

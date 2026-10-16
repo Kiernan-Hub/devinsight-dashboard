@@ -17,15 +17,30 @@ env:
   # "latest" would make a CI failure impossible to reproduce locally.
   GODOT_VERSION: "4.7"
 
+# Read-only: these jobs check out code and report pass/fail, and need nothing else.
+permissions:
+  contents: read
+
+# `shell: bash` is not the same as leaving the shell unspecified. Unspecified, GitHub runs steps
+# with `bash -e`, which does NOT set pipefail: `npm run benchmark | tee summary` would then report
+# tee's exit code — always success — and a regression would show up green. Naming bash
+# explicitly gets `bash -eo pipefail`, so the first failing command in a pipe fails the step.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 20
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
 
       - name: Download Godot (headless-capable)
         run: |
@@ -35,5 +50,14 @@ jobs:
           chmod +x "Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           sudo mv "Godot_v${GODOT_VERSION}-stable_linux.x86_64" /usr/local/bin/godot
 
+      # Also written to the run's summary page, so the numbers are visible without opening logs.
       - name: Run headless benchmark and compare against the committed baseline
-        run: npm run benchmark
+        run: |
+          {
+            echo '### Headless benchmark'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          npm run --silent benchmark 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

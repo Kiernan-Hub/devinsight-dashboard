@@ -323,6 +323,58 @@ The local game can point at `http://localhost:8080/api/ingest` instead of the Ve
 `system_logger.gd`. Set `INGEST_TOKEN` in a `.env` file (see [`.env.example`](.env.example)) to run
 with the same token check production uses.
 
+## CI/CD and supply-chain security
+
+Five workflows run on every push and pull request to `main`:
+
+| Workflow | What it proves |
+|---|---|
+| [`perf-gate.yml`](.github/workflows/perf-gate.yml) | Unit tests (Node + Godot), and the real-telemetry FPS regression gate |
+| [`benchmark-gate.yml`](.github/workflows/benchmark-gate.yml) | The headless benchmark has not regressed against the committed baseline |
+| [`docker.yml`](.github/workflows/docker.yml) | The image builds; the whole stack starts; real telemetry goes in through `/api/ingest` and comes back out; anon cannot write; the privilege invariants hold; the schema re-applies cleanly on top of itself. On `main`, publishes the image that just passed |
+| [`lint.yml`](.github/workflows/lint.yml) | Biome (JavaScript correctness), actionlint (the workflows themselves), hadolint (the Dockerfile) |
+| [`codeql.yml`](.github/workflows/codeql.yml) | GitHub's security analysis over the JavaScript *and* the workflows (also weekly) |
+
+A merge to `main` publishes `ghcr.io/<owner>/devinsight-ingest`, tagged `sha-<commit>` so every
+image traces back to exactly one commit, with signed build provenance and an SBOM (a list of
+everything inside the image) attached in the registry.
+
+How the pipeline itself is hardened, and why:
+
+- **Every action is pinned to a commit SHA**, not a tag. A tag like `@v7` can be re-pointed at
+  different code after the fact; that is how the 2025 `tj-actions/changed-files` compromise
+  reached thousands of repositories at once. Images are pinned to digests for the same reason.
+  [Dependabot](.github/dependabot.yml) turns the cost of pinning — nothing updates on its own,
+  security fixes included — into a weekly pull request that has to pass all of the above. (The
+  three linter images are invoked from `run:` scripts, which Dependabot does not track; those
+  are bumped by hand.)
+- **Least privilege, per job.** Every workflow starts from `permissions: {}` or read-only, and
+  asks for exactly what it uses. The only write permission anywhere is `packages: write`, on the
+  publish job, which only runs on `main`. Registry login uses the short-lived `GITHUB_TOKEN`; no
+  personal token or registry password is stored. Checkouts do not leave the token behind in
+  `.git/config` (`persist-credentials: false`).
+- **A green check has to mean something.** Steps that pipe output (`npm run smoke | tee`) set
+  `shell: bash` explicitly: left unspecified, GitHub's default shell does not enable `pipefail`,
+  so the pipe would report `tee`'s exit code and a failing smoke test would show as passing. The
+  smoke workflow was checked the other way round too — run with a deliberately broken
+  Dockerfile and with anon's insert grant restored, and confirmed to fail on both.
+
+**Settings only the repository owner can switch on** (they live in GitHub, not in the code):
+
+1. *Settings → Code security*: **secret scanning** and **push protection**. Push protection
+   rejects a push containing a recognised credential format from a known provider (AWS keys,
+   GitHub tokens and many more) before it reaches GitHub. It would *not* have caught this
+   project's original leak: the ingest token was a project-specific random string, which no
+   provider's pattern can recognise.
+   That is why the real fix was moving it out of source, and why `local-keys.mjs` refuses to
+   commit even local keys.
+2. *Settings → Rules → Rulesets*: protect `main` and require the checks above to pass before
+   merging, so a red check actually blocks a merge rather than just annotating it.
+3. After the first publish, *Packages → devinsight-ingest → Package settings*: set the image's
+   visibility to public (new packages start private).
+4. Leave CodeQL's "default setup" **off**: `codeql.yml` is the advanced setup, and GitHub refuses
+   to process results from both at once.
+
 ## Local checks
 
 Serve the repository with any static file server (`npm run serve`) and open `index.html` (this

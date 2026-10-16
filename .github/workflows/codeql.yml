@@ -1,0 +1,60 @@
+name: CodeQL
+
+# GitHub's static analysis for security bugs: injection, unsafe data flow from a request into a
+# query or the DOM, and so on. Free for public repositories. Results appear under the
+# repository's Security tab, and as annotations on pull requests.
+#
+# Two languages: the JavaScript (the ingest API and the dashboard), and the workflows themselves.
+# GitHub Actions workflows are code that runs with access to secrets and a write token, and the
+# classic mistakes in them — interpolating an attacker-controlled PR title straight into a shell
+# script, say — are exactly what CodeQL's `actions` analysis looks for.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so new queries released by GitHub run against code that has not changed.
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Upload results to the Security tab.
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: ${{ matrix.language }}
+          # Interpreted languages: nothing to compile, CodeQL reads the source directly.
+          build-mode: none
+          # The broader query suite: more findings than the default, at some cost in noise.
+          queries: security-extended
+          config: |
+            paths-ignore:
+              - vendor
+              - ascent
+
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: /language:${{ matrix.language }}

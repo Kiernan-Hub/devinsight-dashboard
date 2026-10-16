@@ -14,12 +14,15 @@
 #   keys     one-shot   ← Supabase's project API keys, generated fresh on this machine
 #
 # Only the gateway is reachable from outside Docker, and only from this machine (127.0.0.1).
+#
+# Every image is pinned to an exact digest (tag kept alongside for readability), so CI's smoke test
+# runs against precisely what ran locally. Dependabot proposes digest bumps as pull requests.
 
 name: devinsight
 
 services:
   db:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     environment:
       # Local-only. The database port is not published, so this password is reachable only by
       # other containers in this file.
@@ -39,7 +42,7 @@ services:
       retries: 30
 
   keys:
-    image: node:24-alpine
+    image: node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
     command: ["node", "/opt/local-keys.mjs", "/keys"]
     environment:
       # PostgREST and the ingest image both run as uid 1000; see scripts/local-keys.mjs.
@@ -49,7 +52,7 @@ services:
       - keys:/keys
 
   rest:
-    image: postgrest/postgrest:v16.4
+    image: postgrest/postgrest:v16.4@sha256:d155c6718ed9a9f990d159a2ab7c0a3f16944dbb6d0a0344557421042acfe0df
     environment:
       PGRST_DB_URI: postgres://authenticator:authenticator@db:5432/postgres
       PGRST_DB_SCHEMAS: public
@@ -82,7 +85,7 @@ services:
         condition: service_completed_successfully
 
   gateway:
-    image: nginx:1.29-alpine
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
     ports:
       - "127.0.0.1:${GATEWAY_PORT:-8080}:80"
     volumes:

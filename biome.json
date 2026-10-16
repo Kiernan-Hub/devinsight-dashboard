@@ -1,0 +1,31 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "files": {
+    "includes": [
+      "**/*.js",
+      "**/*.mjs",
+      "!vendor",
+      "!ascent",
+      "!godot"
+    ]
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "assist": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "none",
+      "correctness": {
+        "preset": "recommended",
+        "noUndeclaredVariables": "error"
+      },
+      "suspicious": {
+        "preset": "recommended"
+      }
+    }
+  }
+}
