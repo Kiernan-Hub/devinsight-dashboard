@@ -1,0 +1,107 @@
+# The whole telemetry pipeline on one machine, with no Supabase or Vercel account.
+#
+#   docker compose up --build --wait     # start everything; returns once it is healthy
+#   open http://localhost:8080           # the dashboard
+#   npm run smoke                        # send a real sample through it and read it back
+#   docker compose down                  # stop (add -v to also wipe the database)
+#
+# What runs, and which production piece each one stands in for:
+#
+#   gateway  nginx      ← Vercel's static hosting + Supabase's API gateway, on one origin
+#   ingest   this repo  ← the Vercel Function (same api/ingest.js file, via server.mjs)
+#   rest     PostgREST  ← Supabase's REST API (Supabase runs PostgREST itself)
+#   db       Postgres   ← Supabase's database, built from supabase/schema.sql
+#   keys     one-shot   ← Supabase's project API keys, generated fresh on this machine
+#
+# Only the gateway is reachable from outside Docker, and only from this machine (127.0.0.1).
+
+name: devinsight
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      # Local-only. The database port is not published, so this password is reachable only by
+      # other containers in this file.
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Runs once, on an empty volume, in filename order: Supabase's built-in roles first, then
+      # the production schema itself, unmodified. If schema.sql fails, startup fails.
+      - ./docker/db/00-supabase-roles.sql:/docker-entrypoint-initdb.d/00-supabase-roles.sql:ro
+      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
+    healthcheck:
+      # TCP, not the Unix socket: during first-boot initialisation Postgres listens on the
+      # socket only, so this stays unhealthy until the schema has actually been applied.
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  keys:
+    image: node:24-alpine
+    command: ["node", "/opt/local-keys.mjs", "/keys"]
+    environment:
+      # PostgREST and the ingest image both run as uid 1000; see scripts/local-keys.mjs.
+      KEYS_OWNER: "1000:1000"
+    volumes:
+      - ./scripts/local-keys.mjs:/opt/local-keys.mjs:ro
+      - keys:/keys
+
+  rest:
+    image: postgrest/postgrest:v16.4
+    environment:
+      PGRST_DB_URI: postgres://authenticator:authenticator@db:5432/postgres
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      # "@path" tells PostgREST to read the value from a file: the secret never appears in this
+      # file, the environment, or `docker inspect`.
+      PGRST_JWT_SECRET: "@/keys/jwt-secret"
+    volumes:
+      - keys:/keys:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      keys:
+        condition: service_completed_successfully
+
+  ingest:
+    build: .
+    image: devinsight-ingest:local
+    environment:
+      # Through the gateway, so the handler's /rest/v1/ paths resolve exactly as on Supabase.
+      SUPABASE_URL: http://gateway
+      SUPABASE_SERVICE_ROLE_KEY_FILE: /keys/service-role.jwt
+      # Blank by default, which disables the token check. Set INGEST_TOKEN in a .env file next
+      # to this one (see .env.example) to run with the same check production uses.
+      INGEST_TOKEN: ${INGEST_TOKEN:-}
+    volumes:
+      - keys:/keys:ro
+    depends_on:
+      keys:
+        condition: service_completed_successfully
+
+  gateway:
+    image: nginx:1.29-alpine
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:80"
+    volumes:
+      # nginx.conf and the local dashboard config. A directory rather than single files, for the
+      # reason given at the top of nginx.conf; after editing nginx.conf, `docker compose restart
+      # gateway` picks it up.
+      - ./docker/gateway:/etc/nginx/conf.d:ro
+      # The dashboard. nginx.conf serves an explicit allowlist out of this, never the whole
+      # directory. Edits to the dashboard show up on a browser refresh.
+      - .:/srv/repo:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      - rest
+      - ingest
+
+volumes:
+  db-data:
+  keys:

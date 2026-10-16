@@ -285,7 +285,7 @@
 
     <section class="intro">
       <div>
-        <p class="eyebrow">Ascent / production</p>
+        <p class="eyebrow" id="environmentLabel">Ascent / production</p>
         <h2>Performance overview</h2>
         <p class="intro-copy">A live view of frame rate and memory across recent play sessions.</p>
       </div>
@@ -371,12 +371,15 @@
 
   <script type="module">
     import { compareBuilds, detectEvents, logsPath, summarizeLogs, LOG_QUERY_LIMIT } from "./scripts/dashboard-core.mjs";
-    const SUPABASE_URL = "https://savgtraqvbqkbblhhhxe.supabase.co";
-    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNhdmd0cmFxdmJxa2JibGhoaHhlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU4OTE5MjAsImV4cCI6MjEwMTQ2NzkyMH0.t6mC5d1a1P82j_NXGV_nLvrp5g4V3vfFuos37mrnq0w";
-    const headers = { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` };
+    // Supabase in production; the local Docker stack serves its own config.js at the same path.
+    import { SUPABASE_URL, SUPABASE_ANON_KEY, ENVIRONMENT } from "./config.js";
+    // No key means the local stack: PostgREST treats a request without one as the anon role.
+    const headers = SUPABASE_ANON_KEY ? { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` } : {};
     const demoMode = new URLSearchParams(location.search).has("demo");
 
     const $ = id => document.getElementById(id);
+    // Says which database is on screen, so a local screenshot is never mistaken for production.
+    $("environmentLabel").textContent = `Ascent / ${ENVIRONMENT}`;
     let fpsChart;
     let memChart;
     let heightChart;

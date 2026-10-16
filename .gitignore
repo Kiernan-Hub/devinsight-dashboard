@@ -4,3 +4,6 @@ ascent/
 node_modules/
 .vercel/
 godot/benchmark/last_run.json
+.env
+.env.*
+!.env.example

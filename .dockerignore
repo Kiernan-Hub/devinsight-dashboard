@@ -1,0 +1,12 @@
+# Allowlist: ignore everything, then let back in only what the Dockerfile copies.
+#
+# The opposite style (list what to exclude) fails open: any new file — a local .env, a credential
+# dropped in the project root, ascent/ if it were ever renamed — is shipped to the Docker daemon
+# on every build until someone remembers to add it here. This way, forgetting fails closed: the
+# build breaks loudly instead of silently including something it should not.
+*
+!package.json
+!server.mjs
+!api/ingest.js
+!lib/ingest-core.mjs
+!lib/node-server.mjs

@@ -10,6 +10,9 @@
     "check:regression": "node scripts/check-regression.mjs",
     "check:logger-sync": "node --test scripts/logger-sync.test.mjs",
     "serve": "python3 -m http.server 8000",
+    "start": "node server.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "db:migrate:local": "docker compose exec -T -e PGOPTIONS='-c client_min_messages=warning' db psql -U postgres -v ON_ERROR_STOP=1 -q < supabase/schema.sql && docker compose kill -s SIGUSR1 rest",
     "benchmark": "node scripts/run-benchmark.mjs",
     "benchmark:update-baseline": "node scripts/run-benchmark.mjs --update-baseline"
   },

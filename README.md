@@ -117,6 +117,7 @@ npm run benchmark:update-baseline  # run 3 trials, OVERWRITE the baseline — re
 - **Supabase** — Postgres, RLS-locked anon key (**read-only**)
 - **Vercel** — static dashboard hosting
 - **GitHub Actions** — unit tests, the real-telemetry regression gate, and the headless benchmark gate
+- **Docker** — the whole pipeline on one machine, no accounts needed (see below)
 
 ## The ingest API
 
@@ -213,6 +214,11 @@ unhealthy out of one concluded session is a very different claim from 100% out o
 | `SUPABASE_SERVICE_ROLE_KEY` | Vercel + GitHub Actions | The real write key. Never in client code. |
 | `INGEST_TOKEN` | Vercel + game client | Keeps casual traffic out of the table. Optional; blank disables the check. |
 
+Outside Vercel (`node server.mjs`, or the Docker image), each variable can instead be given as a
+path to a file holding it, via a `_FILE` suffix — `SUPABASE_SERVICE_ROLE_KEY_FILE=/run/secrets/key`.
+That is how Docker and Kubernetes hand over secrets, and a file's contents never appear in
+`docker inspect` or a process listing the way an environment variable's do.
+
 ## Database
 
 [`supabase/schema.sql`](supabase/schema.sql) is the source of truth for the backend half of the
@@ -239,19 +245,75 @@ both handled explicitly rather than hoped away:
   written to the DOM with `textContent`, never interpolated into `innerHTML`, and the table
   constrains it to the shape a version string actually has.
 
-As of 0.5.0 the anon role is **read-only**: the insert policy is dropped and `insert`, `update`
-and `delete` are revoked. Writes go through `/api/ingest` with the service-role key. Constraints
-could bound how *absurd* a forged row was; they could never stop a plausible one. Removing the
-write grant is what actually closes the hole.
+As of 0.5.0 the anon role is **read-only**: the insert policy is dropped and the write grants
+are revoked. Writes go through `/api/ingest` with the service-role key. Constraints could bound
+how *absurd* a forged row was; they could never stop a plausible one. Removing the write grant is
+what actually closes the hole.
+
+## Run the whole pipeline locally (Docker)
+
+Everything above, on one machine, with no Supabase or Vercel account:
+
+```sh
+docker compose up --build --wait   # returns once every service reports healthy (~10 s)
+open http://localhost:8080         # the dashboard, reading from the local database
+npm run smoke                      # sends real telemetry through it and reads it back
+docker compose down                # stop; add -v to also wipe the database
+```
+
+| Service | What it is | Stands in for |
+|---|---|---|
+| `gateway` | nginx, the only port exposed (127.0.0.1:8080) | Vercel's static hosting + Supabase's API gateway |
+| `ingest` | this repository's [`Dockerfile`](Dockerfile): [`server.mjs`](server.mjs) running `api/ingest.js` | The Vercel Function |
+| `rest` | PostgREST | Supabase's REST API (Supabase runs PostgREST itself) |
+| `db` | Postgres 17, built from `supabase/schema.sql` | Supabase's database |
+| `keys` | runs once, then exits | Supabase's project API keys |
+
+Design decisions worth defending:
+
+- **The handler runs unchanged.** [`lib/node-server.mjs`](lib/node-server.mjs) gives a plain Node
+  HTTP server the two things Vercel provides (a pre-read body and `res.status()`), so the file
+  Vercel deploys is byte-for-byte the file Docker runs. Its tests drive the real handler through
+  a real socket and check every status code comes out the same as on Vercel.
+- **The production schema applies unmodified.** Plain Postgres lacks Supabase's roles, so
+  [`docker/db/00-supabase-roles.sql`](docker/db/00-supabase-roles.sql) recreates them first —
+  including Supabase's permissive default grants, deliberately. A shim that granted *less* than
+  Supabase would make the schema's revokes look like they work when they might not.
+- **Same URLs as production.** The gateway serves `/api/ingest` like Vercel and `/rest/v1/` like
+  Supabase, so `api/ingest.js` and the dashboard need no local-mode code paths. The dashboard reads
+  its data source from [`config.js`](config.js); the gateway serves a local version at that same
+  path.
+- **No credentials in the repository, not even local ones.** Most local setups commit a fixed demo
+  secret. This project leaked a real token into its public history once already, so instead
+  [`scripts/local-keys.mjs`](scripts/local-keys.mjs) generates a random signing secret and a
+  service-role key on first boot, into a Docker volume only two services can read. Nothing secret
+  is in the repo, the image, or `docker-compose.yml`.
+- **A small, unprivileged image.** No npm dependencies means no `npm install` layer: the image is
+  Node plus five files, listed explicitly (with an allowlist [`.dockerignore`](.dockerignore), so a
+  forgotten file fails closed rather than shipping). It runs as a non-root user, has a health
+  check, and handles `SIGTERM` — without that, Node as a container's process 1 ignores
+  `docker stop` and gets killed mid-request ten seconds later.
+- **The web server serves an allowlist.** The gateway mounts the repository read-only but serves
+  only the dashboard's own files; `ascent/`, `.env`, `.git/` and everything else 404.
+
+```sh
+npm test               # also covers the adapter and key generator (no Docker needed)
+npm run db:migrate:local  # re-apply schema.sql to the running database (it is idempotent)
+```
+
+The local game can point at `http://localhost:8080/api/ingest` instead of the Vercel URL in
+`system_logger.gd`. Set `INGEST_TOKEN` in a `.env` file (see [`.env.example`](.env.example)) to run
+with the same token check production uses.
 
 ## Local checks
 
-Serve the repository with any static file server (`npm run serve`) and open `index.html`. The
+Serve the repository with any static file server (`npm run serve`) and open `index.html` (this
+reads the production Supabase project; for a fully local copy, use Docker as above). The
 dashboard's data calculations are kept in a dependency-free module, and the same tests CI runs
 are:
 
 ```sh
-npm test           # 57 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic
+npm test           # 72 tests: metric maths, gate verdicts, ingest validation, API behaviour, benchmark comparison logic, the Docker adapter and key generator
 npm run test:godot # 52 checks: queue, context provider and events, and the benchmark's pure decision logic
 ```
 
