@@ -44,6 +44,21 @@ considered and rejected by the user; Tier 3 items (Prometheus, queues, etc.) are
   testing) were deliberately not started — see the reasoning in the final summary of that session:
   verify the CI on real runners first, and avoid keyword-stacking.
 
+- **Third round, same day** (user: "keep adding, write everything up"): Prometheus `/metrics` + an
+  opt-in Grafana profile (`e02a293`); a k6 load test (`loadtest/`), which led to **0.7.0 exactly-once
+  ingest** (`11241a8`): one transactional `ingest_batch()` instead of 3 calls, per-session `seq` with
+  a unique key, `created_at` + `sent_at` clock correction, `samples_lost`; the game's copy of the
+  logger in `ascent/` was synced (it matched the committed version before being overwritten). Also:
+  Godot test harness + runner fixes (`52197ac` — Godot exits 0 on a parse error), OpenAPI spec with
+  contract tests (`89c2171`), new architecture diagram (`f1a71d1`), `docs/CASE_STUDY.md` (`aab1f88`).
+  A shareable write-up doc with an "Interview prep" tab exists as a private Claude Docs artifact
+  (https://claude.ai/code/artifact/f4be5dc3-ccb1-475c-9c3b-231903694cc4).
+
+**ORDER MATTERS when going live:** the new `api/ingest.js` calls `rpc/ingest_batch`. Apply
+`supabase/schema.sql` to the restored Supabase project **before** merging the PR (Vercel deploys main).
+Otherwise every ingest returns 502 until the schema lands — clients queue and retry, so nothing is lost,
+but nothing is stored either. Older 0.6.0 clients keep working against the new API (no seq = no dedupe).
+
 **New blocker, more urgent than the old one:** the live Supabase project's hostname
 (`savgtraqvbqkbblhhhxe.supabase.co`) returns **NXDOMAIN** as of 2026-10-16. Most likely paused by
 Supabase's free-tier 7-day-inactivity rule (no traffic since ~2026-09-10). The deployed Vercel
@@ -257,8 +272,10 @@ again, that boundary was a deliberate choice, not an oversight.
 
 ## Test inventory
 
-As of 2026-10-16 (`8df7347`): `npm test` is **94** Node tests (adds the Docker adapter, key
-generator, demo seed, session explorer logic and alerting); `npm run test:godot` unchanged at 52; with the stack up, `npm run smoke` (12 checks)
+As of 2026-10-16 (`aab1f88`): `npm test` is **122** Node tests; `npm run test:godot` is **60** checks
+and now runs through `scripts/run-godot-tests.mjs` (set `GODOT_BIN=/Applications/Godot.app/Contents/MacOS/Godot`
+locally — `godot` is not on PATH on this Mac); `npm run smoke` is 16 checks; `npm run loadtest` exists.
+Earlier in the day it was 94 Node tests; `npm run test:godot` unchanged at 52; with the stack up, `npm run smoke` (12 checks)
 and `npm run test:db` (privilege/RLS invariants). The September inventory follows.
 
 ### As of `ce12d26`
